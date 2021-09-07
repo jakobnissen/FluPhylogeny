@@ -15,6 +15,8 @@ Then:
     * iqtree added alignment
 """
 
+# TODO: ADD TEMP DECLARATIONS TO INTERMEDIATE FILES
+
 import os
 
 SNAKEDIR = os.path.dirname(workflow.snakefile)
@@ -68,7 +70,22 @@ print(PAIRS)
 ###############
 # Rules
 ###############
-# Step one: Get all flutypes aligned
+rule all:
+    input: lambda wc: [f"tmp/refaln/{f}_{t}.aln.trim.fna" for (f, t) in PAIRS] 
+
+rule align_ref:
+    input: REFDIR + "/{segment}/{flutype}.fna"
+    output: "tmp/refaln/{segment}_{flutype}.aln.fna"
+    log: "log/refaln/{segment}_{flutype}.aln.log"
+    shell: "mafft {input} > {output} 2> {log}"
+
+rule trim_aln:
+    input: rules.align_ref.output
+    output: "tmp/refaln/{segment}_{flutype}.aln.trim.fna"
+    log: "log/refaln/{segment}_{flutype}.trim.log"
+    shell: "trimal -in {input} -out {output} -gt 0.9 -cons 60 2> {log}"
+
+# Step one: Get all flutypes aligned and trimmed
 # Step two: Build guide trees
 # Step three: mafft --add cons to refaln
 # Step four: iqtree above
