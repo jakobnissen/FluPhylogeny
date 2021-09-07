@@ -1,4 +1,8 @@
 # TODO: ADD TEMP DECLARATIONS TO INTERMEDIATE FILES
+# TODO: Better error message when given bad input paths
+# TODO: Create PDF from final tree
+# TODO: Report with subtype for each input sample and overlap
+# TODO: Root in PDF file??
 
 import os
 import pathlib
@@ -33,7 +37,7 @@ pathlib.Path(REFOUTDIR).mkdir(parents=True, exist_ok=True)
 
 # Get consensus dir
 if "consensus" not in config:
-    raise KeyError("You must supply consebsus directory: '--config consensus=/path/to/consensus'")
+    raise KeyError("You must supply consensus directory: '--config consensus=/path/to/consensus'")
 
 CONSENSUS_DIR = os.path.abspath(os.path.expanduser(config["consensus"]))
 if not os.path.isdir(CONSENSUS_DIR):
@@ -63,13 +67,12 @@ def get_pairs():
 
 # PAIRS is a list of (segment, flutype)
 PAIRS = get_pairs()
-print(PAIRS)
 
 ###############
 # Rules
 ###############
 rule all:
-    input: lambda wc: [f"trees/{s}/{t}.treefile" for (s, t) in PAIRS] 
+    input: lambda wc: [f"trees/{s}/{t}.pdf" for (s, t) in PAIRS]
 
 rule align_ref:
     input: ancient(REFDIR + "/{segment}/{flutype}.fna")
@@ -120,3 +123,8 @@ rule move_iqtree:
     input: rules.iqtree.output
     output: "trees/{segment}/{flutype}.treefile"
     shell: "cp {input} {output}"
+
+rule plot_tree:
+    input: rules.move_iqtree.output
+    output: "trees/{segment}/{flutype}.pdf"
+    script: SNAKEDIR + "/scripts/plottree.py"
