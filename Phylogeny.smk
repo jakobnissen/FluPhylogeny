@@ -18,6 +18,7 @@ Then:
 # TODO: ADD TEMP DECLARATIONS TO INTERMEDIATE FILES
 
 import os
+import pathlib
 
 SNAKEDIR = os.path.dirname(workflow.snakefile)
 JULIA_COMMAND = f"julia --startup-file=no --project={SNAKEDIR}"
@@ -29,9 +30,23 @@ JULIA_COMMAND = f"julia --startup-file=no --project={SNAKEDIR}"
 if "ref" not in config:
     raise KeyError("You must supply reference directory: '--config ref=/path/to/ref'")
 
-REFDIR = os.path.abspath(os.path.expanduser(config["ref"]))
+TOP_REF_DIR = os.path.abspath(os.path.expanduser(config["ref"]))
+if not os.path.isdir(TOP_REF_DIR):
+    raise NotADirectoryError(TOP_REF_DIR)
+
+# Get host
+if "host" not in config:
+    raise KeyError("You must supply host: '--config host=human'")
+HOST = config["host"]
+
+# Check refdir has a host subdir
+REFDIR = os.path.join(TOP_REF_DIR, "phylo", HOST)
 if not os.path.isdir(REFDIR):
     raise NotADirectoryError(REFDIR)
+
+
+REFOUTDIR = os.path.join(TOP_REF_DIR, "refout", "phylo", HOST)
+pathlib.Path(REFOUTDIR).mkdir(parents=True, exist_ok=True)
 
 # Get consensus dir
 if "consensus" not in config:
@@ -71,7 +86,7 @@ print(PAIRS)
 # Rules
 ###############
 rule all:
-    input: lambda wc: [f"tmp/refaln/{f}_{t}.aln.trim.fna" for (f, t) in PAIRS] 
+    input: lambda wc: [REFOUTDIR + f"/{s}/{t}.treefile" for (s, t) in PAIRS] 
 
 rule align_ref:
     input: REFDIR + "/{segment}/{flutype}.fna"
@@ -85,7 +100,19 @@ rule trim_aln:
     log: "log/refaln/{segment}_{flutype}.trim.log"
     shell: "trimal -in {input} -out {output} -gt 0.9 -cons 60 2> {log}"
 
-# Step one: Get all flutypes aligned and trimmed
+rule guide_tree:
+    input: rules.trim_aln.output
+    output: "tmp/guide/{segment}_{flutype}.treefile"
+    log: "log/guide/{segment}_{flutype}.log"
+    threads: 2
+    params: "tmp/guide/{segment}_{flutype}"
+    shell: "iqtree -s {input} -pre {params} -T {threads} -m HKY+G2 --redo > {log}"
+
+rule move_guide_tree:
+    input: rules.guide_tree.output
+    output: REFOUTDIR + "/{segment}/{flutype}.treefile"
+    shell: "cp {input} {output}"
+
 # Step two: Build guide trees
 # Step three: mafft --add cons to refaln
 # Step four: iqtree above
