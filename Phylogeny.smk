@@ -86,7 +86,7 @@ print(PAIRS)
 # Rules
 ###############
 rule all:
-    input: lambda wc: [REFOUTDIR + f"/{s}/{t}.treefile" for (s, t) in PAIRS] 
+    input: lambda wc: [f"trees/{s}/{t}.treefile" for (s, t) in PAIRS] 
 
 rule align_ref:
     input: REFDIR + "/{segment}/{flutype}.fna"
@@ -113,7 +113,27 @@ rule move_guide_tree:
     output: REFOUTDIR + "/{segment}/{flutype}.treefile"
     shell: "cp {input} {output}"
 
-# Step two: Build guide trees
-# Step three: mafft --add cons to refaln
-# Step four: iqtree above
-# Step five: Visualization stuff
+rule merge_ref_cons:
+    input:
+        ref=rules.trim_aln.output,
+        con="tmp/cat/{segment}_{flutype}.fna"
+    output: "tmp/merge/{segment}_{flutype}.aln.fna"
+    log: "log/merge/{segment}_{flutype}.log"
+    shell: "mafft --add {input.con} --keeplength {input.ref} > {output} 2> {log}"
+
+rule iqtree:
+    input:
+        aln=rules.merge_ref_cons.output,
+        guide=ancient(REFOUTDIR + "/{segment}/{flutype}.treefile")
+    output: "tmp/iqtree/{segment}_{flutype}.treefile"
+    log: "log/iqtree/{segment}_{flutype}.log"
+    threads: 2
+    params: "tmp/iqtree/{segment}_{flutype}"
+    shell:
+        "iqtree -s {input.aln} -pre {params} "
+        "-g {input.guide} -T {threads} -m HKY+G2 --redo > {log}"
+
+rule move_iqtree:
+    input: rules.iqtree.output
+    output: "trees/{segment}/{flutype}.treefile"
+    shell: "cp {input} {output}"

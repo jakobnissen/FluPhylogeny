@@ -190,7 +190,7 @@ function write_cons_cat(
         open(joinpath(directory, "$(segment)_$(name(flutype)).fna"), "w") do io
             for seq in seqs
                 println(io, '>', seq.name)
-                println(io, '>', seq.seq)
+                println(io, seq.seq)
             end
         end
     end
