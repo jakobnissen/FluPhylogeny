@@ -1,20 +1,3 @@
-"""
-Before DAG
-One Julia call to:
-    1. Load all possible refs
-    2. Figure out which segments / samples passed.
-    3. MinHash to determine the best for each
-
-    Save as: 
-        cat.fna for each (segment, flutype) of passed consensus
-
-Then:
-    * Parse the relevant pairs e.g. (segment, flutype) from cat filenames
-    * Align + trim + guide tree each pair-ref
-    * mafft add cat.fna to aligned pair-ref
-    * iqtree added alignment
-"""
-
 # TODO: ADD TEMP DECLARATIONS TO INTERMEDIATE FILES
 
 import os
@@ -89,19 +72,19 @@ rule all:
     input: lambda wc: [f"trees/{s}/{t}.treefile" for (s, t) in PAIRS] 
 
 rule align_ref:
-    input: REFDIR + "/{segment}/{flutype}.fna"
+    input: ancient(REFDIR + "/{segment}/{flutype}.fna")
     output: "tmp/refaln/{segment}_{flutype}.aln.fna"
     log: "log/refaln/{segment}_{flutype}.aln.log"
     shell: "mafft {input} > {output} 2> {log}"
 
 rule trim_aln:
-    input: rules.align_ref.output
-    output: "tmp/refaln/{segment}_{flutype}.aln.trim.fna"
+    input: ancient(rules.align_ref.output)
+    output: REFOUTDIR + "/{segment}/{flutype}.aln.trim.fna"
     log: "log/refaln/{segment}_{flutype}.trim.log"
     shell: "trimal -in {input} -out {output} -gt 0.9 -cons 60 2> {log}"
 
 rule guide_tree:
-    input: rules.trim_aln.output
+    input: ancient(rules.trim_aln.output)
     output: "tmp/guide/{segment}_{flutype}.treefile"
     log: "log/guide/{segment}_{flutype}.log"
     threads: 2
@@ -109,7 +92,7 @@ rule guide_tree:
     shell: "iqtree -s {input} -pre {params} -T {threads} -m HKY+G2 --redo > {log}"
 
 rule move_guide_tree:
-    input: rules.guide_tree.output
+    input: ancient(rules.guide_tree.output)
     output: REFOUTDIR + "/{segment}/{flutype}.treefile"
     shell: "cp {input} {output}"
 
@@ -124,7 +107,7 @@ rule merge_ref_cons:
 rule iqtree:
     input:
         aln=rules.merge_ref_cons.output,
-        guide=ancient(REFOUTDIR + "/{segment}/{flutype}.treefile")
+        guide=REFOUTDIR + "/{segment}/{flutype}.treefile"
     output: "tmp/iqtree/{segment}_{flutype}.treefile"
     log: "log/iqtree/{segment}_{flutype}.log"
     threads: 2
