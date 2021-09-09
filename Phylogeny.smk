@@ -1,6 +1,5 @@
 # TODO: ADD TEMP DECLARATIONS TO INTERMEDIATE FILES
 # TODO: Better error message when given bad input paths
-# TODO: Report with subtype for each input sample and overlap
 # TODO: Root in PDF file??
 # TODO: Better quality PDF file - img size, colors etc.
 
@@ -50,6 +49,7 @@ if not os.path.isdir(CONSENSUS_DIR):
 # Read in all references, and passed consensus
 # For each consensus, find the best suited flutype
 # Cat all the consensus together in file called `tmp/cat/{SEGMENT}_{FLUTYPE}.fna`
+# Write files in subtypes/{SEGMENT}.txt with the flutype for each sample. 
 print("Determining closest subtypes")
 if not os.path.exists("tmp"):
     os.mkdir("tmp")

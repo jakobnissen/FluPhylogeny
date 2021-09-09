@@ -8,7 +8,7 @@ newickpath = snakemake.input[0]
 with open(f"subtypes/{segment}.txt") as file:
     names = set()
     lines = map(str.split, filter(None, map(str.strip, file)))
-    for (sample, seqname, _flutype) in lines:
+    for (sample, seqname, _flutype, _) in lines:
         if flutype == _flutype:
             names.add(seqname)
 

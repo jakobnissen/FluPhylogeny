@@ -22,7 +22,8 @@ function main(
     return nothing
 end
 
-const MINHASHER = MinHasher(500)
+const N_HASHES = 512
+const MINHASHER = MinHasher(N_HASHES)
 const K = 8
 
 function MinHash.update!(mh::MinHasher, seq::LongDNASeq)
@@ -158,8 +159,8 @@ end
 function get_flutypes(
     consensus::Vector{Tuple{Segment, Sample, Seq}},
     references::Vector{Tuple{Segment, FluType, Vector{Seq}}},
-)::Dict{Tuple{Segment, FluType}, Vector{Tuple{Sample, Seq}}}
-    result = Dict{Tuple{Segment, FluType}, Vector{Tuple{Sample, Seq}}}()
+)::Dict{Segment, Dict{FluType, Vector{Tuple{Sample, Seq, UInt}}}}
+    result = Dict{Segment, Dict{FluType, Vector{Tuple{Sample, Seq, UInt}}}}()
 
     for (cons_segment, sample, cons_seq) in consensus
         best_type = none(FluType)
@@ -177,8 +178,8 @@ function get_flutypes(
         if is_error(best_type)
             @warn "Sample $(name(sample)) segment $(string(cons_segment)) does not look like any subtype"
         else
-            key = (cons_segment, unwrap(best_type))
-            push!(get!(valtype(result), result, key), (sample, cons_seq))
+            d = get!(valtype(result), result, cons_segment)
+            push!(get!(valtype(d), d, unwrap(best_type)), (sample, cons_seq, UInt(best_overlaps)))
         end
     end
     return result
@@ -186,11 +187,11 @@ end
 
 function write_cons_cat(
     directory::AbstractString,
-    bytype::Dict{Tuple{Segment, FluType}, Vector{Tuple{Sample, Seq}}},
+    bytype::Dict{Segment, Dict{FluType, Vector{Tuple{Sample, Seq, UInt}}}},
 )
-    for ((segment, flutype), sampleseqs) in bytype
+    for (segment, d) in bytype, (flutype, v) in d
         open(joinpath(directory, "$(segment)_$(name(flutype)).fna"), "w") do io
-            for (_, seq) in sampleseqs
+            for (_, seq, _) in v
                 println(io, '>', seq.name)
                 println(io, seq.seq)
             end
@@ -201,20 +202,13 @@ end
 
 function write_flutypes(
     directory::AbstractString,
-    bytype::Dict{Tuple{Segment, FluType}, Vector{Tuple{Sample, Seq}}},
+    bytype::Dict{Segment, Dict{FluType, Vector{Tuple{Sample, Seq, UInt}}}},
 )
-    # Write text files
-    bysegment = Dict{Segment, Vector{Tuple{Sample, Seq, FluType}}}()
-    for ((segment, flutype), sampleseqs) in bytype
-        for (sample, seq) in sampleseqs
-            v = get!(valtype(bysegment), bysegment, segment)
-            push!(v, (sample, seq, flutype))
-        end
-    end
-    for (segment, v) in bysegment
+    for (segment, d) in bytype
         open(joinpath(directory, string(segment) * ".txt"), "w") do io
-            for (sample, seq, flutype) in v
-                println(io, name(sample), '\t', seq.name, '\t', name(flutype))
+            for (flutype, v) in d, (sample, seq, overlaps) in v
+                print(io, name(sample), '\t', seq.name, '\t')
+                println(io, name(flutype), '\t', overlaps, '/', N_HASHES)
             end
         end
     end
