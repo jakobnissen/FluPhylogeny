@@ -1,0 +1,10 @@
+name: phylogeny
+channels:
+  - bioconda
+  - defaults
+dependencies:
+  - mafft=7.486
+  - trimal=1.4.1
+  - iqtree=2.1.2
+  - snakemake=6.6.1
+  - ete3=3.1.2

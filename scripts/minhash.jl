@@ -186,19 +186,12 @@ function write_cons_cat(
     directory::AbstractString,
     bytype::Dict{Tuple{Segment, FluType}, Vector{Seq}},
 )
+    # Write FASTA files
     for ((segment, flutype), seqs) in bytype
-        # Write FASTA files
         open(joinpath(directory, "$(segment)_$(name(flutype)).fna"), "w") do io
             for seq in seqs
                 println(io, '>', seq.name)
                 println(io, seq.seq)
-            end
-        end
-
-        # Write text files
-        open(joinpath(directory, "$(segment)_$(name(flutype)).txt"), "w") do io
-            for seq in seqs
-                println(io, seq.name)
             end
         end
     end

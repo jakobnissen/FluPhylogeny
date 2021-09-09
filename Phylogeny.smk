@@ -1,8 +1,8 @@
 # TODO: ADD TEMP DECLARATIONS TO INTERMEDIATE FILES
 # TODO: Better error message when given bad input paths
-# TODO: Create PDF from final tree
 # TODO: Report with subtype for each input sample and overlap
 # TODO: Root in PDF file??
+# TODO: Better quality PDF file - img size, colors etc.
 
 import os
 import pathlib
