@@ -16,6 +16,7 @@ function main(
     cons = load_consensus(consensus_dir, segments)
     assert_unique_names(refs, cons)
 
+    # Determine best flutype and write result
     flutypes = get_flutypes(cons, refs)
     write_cons_cat(catdir, flutypes)
     write_flutypes(flutypedir, flutypes)
@@ -62,10 +63,23 @@ function Seq(record::FASTA.Record)
         n = FASTA.header(record)
         n === nothing ? error("Empty FASTA header in file") : n
     end
+    if !is_valid_seqname(name)
+        @warn "Invalid sequence name: \"$name\". Will be renamed by IQ-TREE."
+    end
     empty!(MINHASHER)
     MinHash.update!(MINHASHER, seq)
     sketch = MinHashSketch(MINHASHER)
     Seq(name, seq, sketch)
+end
+
+"""IQ-TREE will rename any sequences that does not conform to this criteria.
+It's probably better to warn here instead of later."""
+function is_valid_seqname(s::AbstractString)
+    all(s) do char
+        isletter(char) ||
+        char in '0':'9' ||
+        char in ('.', '-', '_')
+    end
 end
 
 #######################################################
@@ -164,11 +178,11 @@ function get_flutypes(
 
     for (cons_segment, sample, cons_seq) in consensus
         best_type = none(FluType)
-        best_overlaps = 0
+        best_overlaps = UInt(0)
         for (ref_segment, flutype, ref_seqs) in references
             cons_segment == ref_segment || continue
             for ref_seq in ref_seqs
-                overlaps = MinHash.intersectionlength(cons_seq.sketch, ref_seq.sketch)
+                overlaps = UInt(MinHash.intersectionlength(cons_seq.sketch, ref_seq.sketch))
                 if overlaps > best_overlaps
                     best_overlaps = overlaps
                     best_type = some(flutype)
@@ -179,7 +193,7 @@ function get_flutypes(
             @warn "Sample $(name(sample)) segment $(string(cons_segment)) does not look like any subtype"
         else
             d = get!(valtype(result), result, cons_segment)
-            push!(get!(valtype(d), d, unwrap(best_type)), (sample, cons_seq, UInt(best_overlaps)))
+            push!(get!(valtype(d), d, unwrap(best_type)), (sample, cons_seq, best_overlaps))
         end
     end
     return result
@@ -215,7 +229,7 @@ function write_flutypes(
 end
 
 if length(ARGS) != 4
-    error("Usage: julia minhash.jl catdir, flutypedir refdir consensusdir")
+    error("Usage: julia minhash.jl catdir flutypedir refdir consensusdir")
 else
     main(ARGS...)
 end

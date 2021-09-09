@@ -26,11 +26,11 @@ if "host" not in config:
 HOST = config["host"]
 
 # Check refdir has a host subdir
+possible_hosts = set(os.listdir(os.path.join(TOP_REF_DIR, "phylo")))
+if HOST not in possible_hosts:
+    raise KeyError(f"Directory for host {HOST} not found in {os.path.join(TOP_REF_DIR, "phylo")}")
+
 REFDIR = os.path.join(TOP_REF_DIR, "phylo", HOST)
-if not os.path.isdir(REFDIR):
-    raise NotADirectoryError(REFDIR)
-
-
 REFOUTDIR = os.path.join(TOP_REF_DIR, "refout", "phylo", HOST)
 pathlib.Path(REFOUTDIR).mkdir(parents=True, exist_ok=True)
 
@@ -83,19 +83,19 @@ rule all:
 rule align_ref:
     input: ancient(REFDIR + "/{segment}/{flutype}.fna")
     output: "tmp/refaln/{segment}_{flutype}.aln.fna"
-    log: "log/refaln/{segment}_{flutype}.aln.log"
+    log: "tmp/log/refaln/{segment}_{flutype}.aln.log"
     shell: "mafft {input} > {output} 2> {log}"
 
 rule trim_aln:
     input: ancient(rules.align_ref.output)
     output: REFOUTDIR + "/{segment}/{flutype}.aln.trim.fna"
-    log: "log/refaln/{segment}_{flutype}.trim.log"
+    log: "tmp/log/refaln/{segment}_{flutype}.trim.log"
     shell: "trimal -in {input} -out {output} -gt 0.9 -cons 60 2> {log}"
 
 rule guide_tree:
     input: ancient(rules.trim_aln.output)
     output: "tmp/guide/{segment}_{flutype}.treefile"
-    log: "log/guide/{segment}_{flutype}.log"
+    log: "tmp/log/guide/{segment}_{flutype}.log"
     threads: 2
     params: "tmp/guide/{segment}_{flutype}"
     shell: "iqtree -s {input} -pre {params} -T {threads} -m HKY+G2 --redo > {log}"
@@ -110,7 +110,7 @@ rule merge_ref_cons:
         ref=rules.trim_aln.output,
         con="tmp/cat/{segment}_{flutype}.fna"
     output: "tmp/merge/{segment}_{flutype}.aln.fna"
-    log: "log/merge/{segment}_{flutype}.log"
+    log: "tmp/log/merge/{segment}_{flutype}.log"
     shell: "mafft --add {input.con} --keeplength {input.ref} > {output} 2> {log}"
 
 rule iqtree:
@@ -118,7 +118,7 @@ rule iqtree:
         aln=rules.merge_ref_cons.output,
         guide=REFOUTDIR + "/{segment}/{flutype}.treefile"
     output: "tmp/iqtree/{segment}_{flutype}.treefile"
-    log: "log/iqtree/{segment}_{flutype}.log"
+    log: "tmp/log/iqtree/{segment}_{flutype}.log"
     threads: 2
     params: "tmp/iqtree/{segment}_{flutype}"
     shell:
