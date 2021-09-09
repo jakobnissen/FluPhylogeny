@@ -5,7 +5,8 @@ using InfluenzaCore: Segment
 using ErrorTypes: ErrorTypes, Option, some, none, unwrap, @unwrap_or, is_error
 
 function main(
-    outdir::AbstractString,
+    catdir::AbstractString,
+    flutypedir::AbstractString,
     ref_dir::AbstractString,
     consensus_dir::AbstractString,
 )
@@ -16,7 +17,8 @@ function main(
     assert_unique_names(refs, cons)
 
     flutypes = get_flutypes(cons, refs)
-    write_cons_cat(outdir, flutypes)
+    write_cons_cat(catdir, flutypes)
+    write_flutypes(flutypedir, flutypes)
     return nothing
 end
 
@@ -156,8 +158,8 @@ end
 function get_flutypes(
     consensus::Vector{Tuple{Segment, Sample, Seq}},
     references::Vector{Tuple{Segment, FluType, Vector{Seq}}},
-)::Dict{Tuple{Segment, FluType}, Vector{Seq}}
-    result = Dict{Tuple{Segment, FluType}, Vector{Seq}}()
+)::Dict{Tuple{Segment, FluType}, Vector{Tuple{Sample, Seq}}}
+    result = Dict{Tuple{Segment, FluType}, Vector{Tuple{Sample, Seq}}}()
 
     for (cons_segment, sample, cons_seq) in consensus
         best_type = none(FluType)
@@ -173,10 +175,10 @@ function get_flutypes(
             end
         end
         if is_error(best_type)
-            @warn "Sample $(name(sample)) segment $(string(segment)) does not look like any subtype"
+            @warn "Sample $(name(sample)) segment $(string(cons_segment)) does not look like any subtype"
         else
             key = (cons_segment, unwrap(best_type))
-            push!(get!(Vector{Seq}, result, key), cons_seq)
+            push!(get!(valtype(result), result, key), (sample, cons_seq))
         end
     end
     return result
@@ -184,12 +186,11 @@ end
 
 function write_cons_cat(
     directory::AbstractString,
-    bytype::Dict{Tuple{Segment, FluType}, Vector{Seq}},
+    bytype::Dict{Tuple{Segment, FluType}, Vector{Tuple{Sample, Seq}}},
 )
-    # Write FASTA files
-    for ((segment, flutype), seqs) in bytype
+    for ((segment, flutype), sampleseqs) in bytype
         open(joinpath(directory, "$(segment)_$(name(flutype)).fna"), "w") do io
-            for seq in seqs
+            for (_, seq) in sampleseqs
                 println(io, '>', seq.name)
                 println(io, seq.seq)
             end
@@ -198,8 +199,29 @@ function write_cons_cat(
     return nothing
 end
 
-if length(ARGS) != 3
-    error("Usage: julia minhash.jl outdir refdir consensusdir")
+function write_flutypes(
+    directory::AbstractString,
+    bytype::Dict{Tuple{Segment, FluType}, Vector{Tuple{Sample, Seq}}},
+)
+    # Write text files
+    bysegment = Dict{Segment, Vector{Tuple{Sample, Seq, FluType}}}()
+    for ((segment, flutype), sampleseqs) in bytype
+        for (sample, seq) in sampleseqs
+            v = get!(valtype(bysegment), bysegment, segment)
+            push!(v, (sample, seq, flutype))
+        end
+    end
+    for (segment, v) in bysegment
+        open(joinpath(directory, string(segment) * ".txt"), "w") do io
+            for (sample, seq, flutype) in v
+                println(io, name(sample), '\t', seq.name, '\t', name(flutype))
+            end
+        end
+    end
+end
+
+if length(ARGS) != 4
+    error("Usage: julia minhash.jl catdir, flutypedir refdir consensusdir")
 else
     main(ARGS...)
 end

@@ -57,7 +57,13 @@ if not os.path.exists("tmp"):
 if not os.path.exists("tmp/cat"):
     os.mkdir("tmp/cat")
 
-shell(f"{JULIA_COMMAND} scripts/minhash.jl tmp/cat {REFDIR} {CONSENSUS_DIR}")
+if not os.path.exists("subtypes"):
+    os.mkdir("subtypes")
+
+shell(
+    f"{JULIA_COMMAND} {os.path.join(SNAKEDIR, 'scripts/minhash.jl')} "
+    "tmp/cat subtypes {REFDIR} {CONSENSUS_DIR}"
+)
 
 # Parse in the output
 def get_pairs():
