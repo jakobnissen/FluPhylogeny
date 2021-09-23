@@ -1,134 +1,114 @@
-module Reassort
-
-using FASTX: FASTA
+include("tools.jl")
+using .Tools
 using InfluenzaCore: Segment
-using BioSequences: LongDNASeq
-
-const BlastRow = NamedTuple{
-    (:query, :accession, :bitscore),
-    Tuple{String, String, Float64}
-}
-
-ifilter(f) = x -> Iterators.filter(f, x)
-imap(f) = x -> Iterators.map(f, x)
-
-for T in (:Sample, :SubType)
-    @eval begin
-        struct $T
-            name::String
-        end
-        Base.hash(x::$T, h::UInt8) = hash(x.name, h)
-        Base.:(==)(x::$T, y::$T) = x.name == y.name
-    end
-end
 
 function main(
-    consensus_dir::AbstractString,
-    blastdb::AbstractString
+    blastpath::AbstractString,
+    fastapath::AbstractString,
+    outpath::AbstractString
 )
-    check_blastn()
-    fnaname, blastname = tempname(), tempname()
-    namemap = copy_consensus(consensus_dir, fnaname)
-    run(`blastn -db $blastdb -query $fnaname -outfmt '6 qacc sacc bitscore' -out $blastname -word_size 10`)
-    blast_result = open(parse_blast, blastname)
-    validate_blast!(blast_result, namemap)
-end
-
-function check_blastn()
-    run(pipeline(`which blastn`, stdout=devnull, stderr=devnull))
-end
-
-function copy_consensus(
-    consdir::AbstractString,
-    outfile::AbstractString
-)::Dict{String, Tuple{Sample, Segment}}
-    namemap = Dict{String, Tuple{Sample, Segment}}()
-    open(FASTA.Writer, outfile) do writer
-        for subdir in readdir(consdir, join=true)
-            sample = Sample(basename(subdir))
-            open(FASTA.Reader, joinpath(subdir, "curated.fna")) do reader
-                for record in reader
-                    header = FASTA.header(record)
-                    segment = parse(Segment, last(rsplit(header, '_', limit=2)))
-                    haskey(namemap, header) && error("Sequence $header is not unique")
-                    namemap[header] = (sample, segment)
-                    write(writer, record)
-                end
-            end
-        end
+    allpairs = open(get_all, fastapath)
+    hits = open(read_blast, blastpath)
+    open(outpath, "w") do io
+        report(io, allpairs, hits)
     end
-    return namemap
 end
 
-function parse_blast(
-    io::IO,
-)::Vector{BlastRow}
-    v = eachline(io) |>
-    imap(strip) |>
-    ifilter(!isempty) |>
-    imap(i -> split(i, '\t')) |>
-    imap() do (_query, _accession, _bitscore)
-        query = String(_query)
-        accession = String(_accession)
-        bitscore = parse(Float64, _bitscore)
-        (; query, accession, bitscore)
-    end |> collect
-end
-
-function best!(v::Vector{BlastRow})
-    isempty(v) && return v
-    sort!(v, by=i -> (i.query, i.bitscore), rev=true)
-    query = first(v).query
-    len = 1
-    for i in 2:lastindex(v)
-        blastrow = v[i]
-        if blastrow.query != query
-            len += 1
-            v[len] = blastrow
-            query = blastrow.query
+function get_all(io::IO)::Vector{Tuple{Sample, Segment}}
+    result = Vector{Tuple{Sample, Segment}}()
+    for line in eachline(io)
+        if isempty(line) || first(line) != '>'
+            continue
         end
-    end
-    resize!(v, len)
-end
-
-@noinline bad_trailing(s) = error("Cannot parse as NAME_SEGMENT: \"" * s, '"')
-
-function split_segment(s::Union{String, SubString{String}})
-    p = findlast(isequal(UInt8('_')), codeunits(s))
-    p === nothing && return bad_trailing(s)
-    seg = tryparse(Segment, SubString(s, p+1:lastindex(s)))
-    seg === nothing && return bad_trailing(s)
-    return (SubString(s, 1, prevind(s, p)), seg)
-end
-
-function validate_blast!(
-    v::Vector{BlastRow},
-    namemap::Dict{String, Tuple{Sample, Segment}}
-)::Dict{Sample, Dict{Segment, Union{Nothing, SubType}}}
-    result = Dict{Sample, Dict{Segment, Union{Nothing, SubType}}}()
-    for i in best!(v)
-        _, qseg = split_segment(i.query)
-        _subtype, aseg = split_segment(i.accession)
-        qseg == aseg || continue
-        subtype = qseg == aseg ? SubType(_subtype) : nothing
-        sample, segment = namemap[i.query]
-        get!(valtype(result), result, sample)[segment] = subtype
+        samplename, segment = Tools.split_segment(strip(line)[2:end])
+        push!(result, (Sample(samplename), segment))
     end
     return result
 end
 
-# TODO: Change this to give an output that makes sense
-function report(subtypes::Dict{Sample, Dict{Segment, Union{Nothing, SubType}}})
-    # Good: All segments map to same subtype
-    good = Set((k for (k,v) in subtypes if !in(nothing, values(v)) && length(Set(values(v))) == 1))
-
-    # Reassorted: Segments map to different subtypes
-    reassorted = Set((k for (k,v) in setdiff(keys(subtypes), good) if length(setdiff(values(v), (nothing,))) > 1))
-
-    # Bad: Neither good nor reassorted, meaning all mapping segments map to one subtype,
-    # but some segments do not map
-    bad = Set(setdiff(keys(subtypes), good, reassorted))
-    return good, bad, reassorted
+function read_blast(io::IO)::Vector{Tuple{Sample, Segment, FluType}}
+    rows = Tools.parse_blast_io(io)
+    filter!(rows) do row
+        row.pident ≥ 0.8 &&
+        row.qcovhsp ≥ 0.8
+    end
+    Tools.keep_best!(rows)
+    map(rows) do row
+        sample, qsegment = Tools.split_segment(row.qacc)
+        flutype, ssegment = Tools.split_segment(row.sacc)
+        if qsegment != ssegment
+            error("Sample $sample segment $qsegment maps to other segment $(row.sacc)")
+        end
+        (Sample(sample), qsegment, FluType(flutype))
+    end
 end
 
-end # module
+function report(
+    io::IO,
+    allpairs::Vector{Tuple{Sample, Segment}},
+    hits::Vector{Tuple{Sample, Segment, FluType}}
+)
+    # Good: All segments map to same subtype
+    # Reassorted: Segments map to different subtypes
+    # Bad: Neither good nor reassorted, meaning all mapping segments map to one subtype,
+    # but some segments do not map
+    missings = let
+        d = Dict{Sample, Set{Segment}}()
+        for (sample, segment) in allpairs
+            push!(get!(valtype(d), d, sample), segment)
+        end
+        for (sample, segment, _) in hits
+            delete!(d[sample], segment)
+        end
+        filter!(d) do (k, v)
+            !isempty(v)
+        end
+    end
+
+    bysample = Dict{Sample, Vector{Tuple{Segment, FluType}}}()
+    for (sample, segment, flutype) in hits
+        push!(get!(valtype(bysample), bysample, sample), (segment, flutype))
+    end
+
+    good = Set((k for (k,v) in bysample if
+        length(Set(map(last, v))) == 1 &&
+        k ∉ keys(missings)
+    ))
+
+    reassorted = Set((k for (k,v) in bysample if
+        length(Set(map(last, v))) > 1
+    ))
+
+    bad = Set(setdiff(keys(bysample), good, reassorted))
+
+    if !isempty(good)
+        println(io, "Good:")
+        for sample in good
+            println(io, '\t', sample, '\t', bysample[sample][1][2])
+        end
+    end
+
+    if !isempty(bad)
+        println(io, "\nSome segments unassigned:")
+        for sample in bad
+            println(io, '\t', sample, '\t', join(missings[sample], ", ", " and "))
+        end
+    end
+
+    if !isempty(reassorted)
+        println(io, "\nREASSORTMENT:")
+        for sample in reassorted
+            println(io, '\t', sample)
+            for (segment, flutype) in sort!(bysample[sample])
+                println(io, "\t\t", segment, '\t', flutype)
+            end
+        end
+    end
+end
+
+if length(ARGS) != 3
+    println("Usage: julia reassort.jl blastpath fastapath outpath")
+    exit(1)
+else
+    main(ARGS...)
+end
