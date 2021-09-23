@@ -30,6 +30,15 @@ struct Seq
     seq::LongDNASeq
 end
 
+function Seq(record::FASTA.Record)
+    seq = FASTA.sequence(LongDNASeq, record)
+    name = let
+        h = FASTA.header(record)
+        h === nothing ? error("Empty header in FASTA record") : h
+    end
+    Seq(name, seq)
+end
+
 function keep_best!(v::Vector{<:NamedTuple})
     isempty(v) && return v
     sort!(v, by=i -> (i.qacc, i.bitscore), rev=true)

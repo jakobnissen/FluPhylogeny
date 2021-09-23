@@ -2,12 +2,9 @@
 # Write "subtypes" with seqname \t flutype for all sequences
 # Write tmp/cat/{segment}_{flutype}.fna for all present flutypes
 
-using BlastParse: BlastParse
-using BioSequences: LongDNASeq
-using FASTX: FASTA
-
 include("tools.jl")
 using .Tools
+using FASTX: FASTA
 
 function main(
     segment::AbstractString,
@@ -29,15 +26,6 @@ function main(
     return nothing
 end
 
-function Tools.Seq(record::FASTA.Record)
-    seq = FASTA.sequence(LongDNASeq, record)
-    name = FASTA.header(record)::String
-    if !is_valid_seqname(name)
-        @warn "Invalid sequence name: \"$name\". Will be renamed by IQ-TREE."
-    end
-    Seq(name, seq)
-end
-
 """IQ-TREE will rename any sequences that does not conform to this criteria.
 It's probably better to warn here instead of later."""
 function is_valid_seqname(s::AbstractString)
@@ -55,7 +43,11 @@ function load_consensus(cons_path::AbstractString)::Vector{Seq}
         seqs = Seq[]
         while !eof(reader)
             read!(reader, record)
-            push!(seqs, Seq(record))
+            seq = Seq(record)
+            if !is_valid_seqname(seq.name)
+                @warn "Invalid sequence name: \"$(seq.name)\". Will be renamed by IQ-TREE."
+            end
+            push!(seqs, seq)
         end
         return seqs
     end
@@ -65,7 +57,7 @@ function get_best(blastin::AbstractString)::Dict{String, FluType}
     rows = open(Tools.parse_blast_io, blastin)
     filter_blast!(rows)
     Tools.keep_best!(rows)
-    return Dict(row.qacc => last(split_flutype(row.sacc)) for row in rows)
+    return Dict(row.qacc => last(Tools.split_flutype(row.sacc)) for row in rows)
 end
 
 function filter_blast!(rows::Vector{<:NamedTuple})

@@ -1,10 +1,9 @@
 # usage: julia gather_consensus.jl refdir tmp/cat consensus_dir
 
-using FASTX: FASTA
-using InfluenzaCore: Segment
-
 include("tools.jl")
 using .Tools
+using FASTX: FASTA
+using InfluenzaCore: Segment
 
 function main(
     outdir::AbstractString,
@@ -18,7 +17,7 @@ function main(
     consensus = Tools.load_consensus(consdir)
 
     # Remove consensus of irrelevant segments
-    filter!(consensus) do (sample, segment, seq)
+    filter!(consensus) do (_, segment, _)
         in(segment, segments)
     end
 
