@@ -94,11 +94,11 @@ rule makeblastdb:
         nsq=REFOUTDIR + "/{segment}.fna" + ".nsq"
     shell: "makeblastdb -in {input} -dbtype nucl"
 
-rule gather_consensus:
+rule gather_cons:
     output: expand("tmp/cat/{segment}.fna", segment=ALL_SEGMENTS)
     params:
         juliacmd=JULIA_COMMAND,
-        scriptpath=f"{SNAKEDIR}/scripts/gather_consensus.jl",
+        scriptpath=f"{SNAKEDIR}/scripts/gather_cons.jl",
         refdir=REFDIR,
         consensus_dir=CONSENSUS_DIR
     shell: "{params.juliacmd} {params.scriptpath} tmp/cat {params.refdir} {params.consensus_dir}"
@@ -121,7 +121,7 @@ rule blastn:
 rule parse_blast:
     input:
         blast=rules.blastn.output,
-        cons=rules.gather_consensus.output
+        cons=rules.gather_cons.output
     output: "tmp/flutypes/{segment}.txt"
     params:
         juliacmd=JULIA_COMMAND,
@@ -187,7 +187,7 @@ rule align_to_ref:
 rule iqtree:
     input:
         aln=rules.align_to_ref.output,
-        guide=REFOUTDIR + "/{segment}_{flutype}.treefile"
+        guide=rules.move_guide_tree.output
     output: "tmp/iqtree/{segment}_{flutype}.treefile"
     log: "tmp/log/iqtree/{segment}_{flutype}.log"
     threads: 2
