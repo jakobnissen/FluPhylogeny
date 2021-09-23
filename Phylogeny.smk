@@ -103,7 +103,6 @@ rule gather_consensus:
         consensus_dir=CONSENSUS_DIR
     shell: "{params.juliacmd} {params.scriptpath} tmp/cat {params.refdir} {params.consensus_dir}"
 
-# TODO: Update to output relevant blast fields only. Also update the parsing script
 rule blastn:
     input:
         nin=REFOUTDIR + "/{segment}.fna" + ".nin",
@@ -113,7 +112,7 @@ rule blastn:
     output: "tmp/blast/{segment}.blastout"
     params:
         basename=rules.cat_ref.output
-    shell: "blastn -query {input.fna} -db {params.basename} -outfmt '6 qacc sacc pident bitscore' > {output}"
+    shell: "blastn -query {input.fna} -db {params.basename} -outfmt '6 qacc sacc qlen length pident bitscore' > {output}"
 
 # TODO: Somehow warn if no hits were found for a segment
 # This also creates tmp/cat/{segment}_{flutype}.fna for all flutypes

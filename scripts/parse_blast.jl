@@ -23,7 +23,7 @@ function main(
 end
 
 eval(BlastParse.gen_blastparse_code(
-    BlastParse.DEFAULT_COLUMNS,
+    (:qacc, :sacc, :qlen, :length, :pident, :bitscore),
     :parse_blast_io
 ))
 
@@ -80,13 +80,13 @@ function load_consensus(cons_path::AbstractString)::Vector{Seq}
 end
 
 function get_best(blastin::AbstractString)::Dict{String, FluType}
-    bitscore = 0.0
     qacc = ""
     result = Dict{String, FluType}()
     rows = open(parse_blast_io, blastin)
+    filter_blast!(rows)
     sort!(rows, by=row -> (row.qacc, row.bitscore), rev=true)
     for row in rows
-        if row.qacc != qacc || row.bitscore > bitscore
+        if row.qacc != qacc
             (_, flutype) = let
                 s = try_split_flutype(row.sacc)
                 if s === nothing
@@ -96,11 +96,19 @@ function get_best(blastin::AbstractString)::Dict{String, FluType}
                 end
             end
             result[row.qacc] = flutype
-            bitscore = row.bitscore
             qacc = row.qacc
         end
     end
     return result
+end
+
+function filter_blast!(rows::Vector{<:NamedTuple})
+    # For now, just some haphazardly chosen filters: Minimum 80% identity
+    # over at least 80% of the query
+    filter!(rows) do row
+        row.pident ≥ 0.8 &&
+        row.length / row.qlen ≥ 0.8
+    end
 end
 
 function write_best(
@@ -111,10 +119,13 @@ function write_best(
 )
     by_flutype = Dict{FluType, Vector{Seq}}()
     for seq in consensus
-        key = best[seq.name]
-        push!(get!(valtype(by_flutype), by_flutype, key), seq)
+        if haskey(best, seq.name)
+            flutype = best[seq.name]
+            push!(get!(valtype(by_flutype), by_flutype, flutype), seq)
+        else
+            @warn "Sequence \"$(seq.name)\" does not match any flutype!"
+        end
     end
-
     for (flutype, seqs) in by_flutype
         open(FASTA.Writer, joinpath(cat_dir, "$(segment)_$(name(flutype)).fna")) do writer
             for seq in seqs
