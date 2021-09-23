@@ -2,7 +2,9 @@
 
 using FASTX: FASTA
 using InfluenzaCore: Segment
-using BioSequences: LongDNASeq
+
+include("tools.jl")
+using .Tools
 
 function main(
     outdir::AbstractString,
@@ -13,62 +15,38 @@ function main(
         parse(Segment, entry)
     end
 
-    consensus = load_consensus(segments, consdir)
-    dump_consensus(outdir, consensus)
-end
+    consensus = Tools.load_consensus(consdir)
 
-function load_consensus(
-    segments::Vector{Segment},
-    consdir::AbstractString
-)::Dict{Segment, Dict{String, LongDNASeq}}
-    result = Dict{Segment, Dict{String, LongDNASeq}}()
-    record = FASTA.Record()
-    for subdir in readdir(consdir, join=true)
-        open(FASTA.Reader, joinpath(subdir, "curated.fna")) do reader
-            while !eof(reader)
-                read!(reader, record)
-                header = FASTA.header(record)
-                (name, segment) = let
-                    s = try_split_segment(header)
-                    if s === nothing
-                        error("Header \"$header\" cannot be parsed as HEADER_SEGMENT")
-                    end
-                    s
-                end
-                in(segment, segments) || continue
-                d = get!(valtype(result), result, segment)
-                if haskey(d, name)
-                    error("Name \"$name\", segment $segment is not unique")
-                end
-                d[name] = FASTA.sequence(LongDNASeq, record)
-            end
-        end
+    # Remove consensus of irrelevant segments
+    filter!(consensus) do (sample, segment, seq)
+        in(segment, segments)
     end
-    return result
+
+    # Split by segment andensure uniqueness of names within one segment
+    bysegment = Dict(s => Seq[] for s in segments)
+    names = Dict(s => Set{String}() for s in segments)
+    for (_, segment, seq) in consensus
+        if seq.name ∈ names[segment]
+            error("Name \"$(seq.name)\", segment $segment is not unique")
+        end
+        push!(bysegment[segment], seq)
+        push!(names[segment], seq.name)
+    end
+
+    dump_consensus(outdir, bysegment)
 end
 
 function dump_consensus(
     outdir::AbstractString,
-    consensus::Dict{Segment, Dict{String, LongDNASeq}}
+    consensus::Dict{Segment, Vector{Seq}}
 )
-    for (segment, d) in consensus
+    for (segment, seqs) in consensus
         open(FASTA.Writer, joinpath(outdir, string(segment) * ".fna")) do writer
-            for (name, seq) in d
-                write(writer, FASTA.Record(name, seq))
+            for seq in seqs
+                write(writer, FASTA.Record(seq.name, seq.seq))
             end
         end
     end 
-end
-
-function try_split_segment(
-    s_::Union{String, SubString{String}}
-)::Union{Nothing, Tuple{SubString{String}, Segment}}
-    s = strip(s_)
-    p = findlast(isequal(UInt8('_')), codeunits(s))
-    p === nothing && return nothing
-    seg = tryparse(Segment, SubString(s, p+1, lastindex(s)))
-    seg === nothing && return nothing
-    return (SubString(s, 1:prevind(s, p)), seg)
 end
 
 if length(ARGS) == 3

@@ -4,7 +4,6 @@
 # TODO: Better quality PDF file - img size, colors etc.
 
 import os
-import pathlib
 
 SNAKEDIR = os.path.dirname(workflow.snakefile)
 JULIA_COMMAND = f"julia --startup-file=no --project={SNAKEDIR}"
@@ -32,7 +31,6 @@ if HOST not in possible_hosts:
 
 REFDIR = os.path.join(TOP_REF_DIR, "phylo", HOST)
 REFOUTDIR = os.path.join(TOP_REF_DIR, "refout", "phylo", HOST)
-pathlib.Path(REFOUTDIR).mkdir(parents=True, exist_ok=True)
 
 # Get consensus dir
 if "consensus" not in config:
@@ -98,7 +96,7 @@ rule gather_cons:
     output: expand("tmp/cat/{segment}.fna", segment=ALL_SEGMENTS)
     params:
         juliacmd=JULIA_COMMAND,
-        scriptpath=f"{SNAKEDIR}/scripts/gather_cons.jl",
+        scriptpath=f"{SNAKEDIR}/scripts/gather_consensus.jl",
         refdir=REFDIR,
         consensus_dir=CONSENSUS_DIR
     shell: "{params.juliacmd} {params.scriptpath} tmp/cat {params.refdir} {params.consensus_dir}"

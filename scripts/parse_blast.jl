@@ -1,6 +1,13 @@
+# Purpose -- applied to one segment at a time:
+# Write "subtypes" with seqname \t flutype for all sequences
+# Write tmp/cat/{segment}_{flutype}.fna for all present flutypes
+
 using BlastParse: BlastParse
 using BioSequences: LongDNASeq
 using FASTX: FASTA
+
+include("tools.jl")
+using .Tools
 
 function main(
     segment::AbstractString,
@@ -22,34 +29,9 @@ function main(
     return nothing
 end
 
-eval(BlastParse.gen_blastparse_code(
-    (:qacc, :sacc, :qcovhsp, :pident, :bitscore),
-    :parse_blast_io
-))
-
-"A \"flutype\" of influenza, some monophyletic clade of a segment"
-struct FluType
-    name::String
-end
-
-name(x::FluType) = x.name
-Base.hash(x::FluType, h::UInt) = hash(name(x), hash(FluType, h))
-Base.:(==)(x::FluType, y::FluType) = name(x) == name(y)
-Base.print(io::IO, x::FluType) = print(io, name(x))
-Base.isless(x::FluType, y::FluType) = isless(name(x), name(y))
-
-"Represents a DNA sequence"
-struct Seq
-    name::String
-    seq::LongDNASeq
-end
-
-function Seq(record::FASTA.Record)
+function Tools.Seq(record::FASTA.Record)
     seq = FASTA.sequence(LongDNASeq, record)
-    name = let
-        n = FASTA.header(record)
-        n === nothing ? error("Empty FASTA header in file") : n
-    end
+    name = FASTA.header(record)::String
     if !is_valid_seqname(name)
         @warn "Invalid sequence name: \"$name\". Will be renamed by IQ-TREE."
     end
@@ -80,26 +62,10 @@ function load_consensus(cons_path::AbstractString)::Vector{Seq}
 end
 
 function get_best(blastin::AbstractString)::Dict{String, FluType}
-    qacc = ""
-    result = Dict{String, FluType}()
-    rows = open(parse_blast_io, blastin)
+    rows = open(Tools.parse_blast_io, blastin)
     filter_blast!(rows)
-    sort!(rows, by=row -> (row.qacc, row.bitscore), rev=true)
-    for row in rows
-        if row.qacc != qacc
-            (_, flutype) = let
-                s = try_split_flutype(row.sacc)
-                if s === nothing
-                    error("Cannot parse \"$(row.sacc)\" as NAME_FLUTYPE")
-                else
-                    s
-                end
-            end
-            result[row.qacc] = flutype
-            qacc = row.qacc
-        end
-    end
-    return result
+    Tools.keep_best!(rows)
+    return Dict(row.qacc => last(split_flutype(row.sacc)) for row in rows)
 end
 
 function filter_blast!(rows::Vector{<:NamedTuple})
@@ -135,11 +101,12 @@ function write_best(
     end
 end
 
-function try_split_flutype(s_::Union{String, SubString{String}})
+@noinline bad_trailing(s) = error("Cannot parse as NAME_FLUTYPE: \"" * s, '"')
+function split_flutype(s_::Union{String, SubString{String}})
     s = strip(s_)
     p = findlast(isequal(UInt8('_')), codeunits(s))
-    p === nothing && return nothing
-    p == lastindex(s) && return nothing
+    p === nothing && return bad_trailing(s)
+    p == lastindex(s) && return bad_trailing(s)
     name = SubString(s, 1:prevind(s, p))
     flutype = FluType(SubString(s, p+1:lastindex(s)))
     return (name, flutype)
