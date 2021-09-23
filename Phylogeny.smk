@@ -28,7 +28,7 @@ HOST = config["host"]
 # Check refdir has a host subdir
 possible_hosts = set(os.listdir(os.path.join(TOP_REF_DIR, "phylo")))
 if HOST not in possible_hosts:
-    raise KeyError(f"Directory for host {HOST} not found in {os.path.join(TOP_REF_DIR, "phylo")}")
+    raise KeyError(f"Directory for host {HOST} not found in {os.path.join(TOP_REF_DIR, 'phylo')}")
 
 REFDIR = os.path.join(TOP_REF_DIR, "phylo", HOST)
 REFOUTDIR = os.path.join(TOP_REF_DIR, "refout", "phylo", HOST)
@@ -42,58 +42,130 @@ CONSENSUS_DIR = os.path.abspath(os.path.expanduser(config["consensus"]))
 if not os.path.isdir(CONSENSUS_DIR):
     raise NotADirectoryError(CONSENSUS_DIR)
 
-###############
-# Minhash
-###############
-# This script does the following:
-# Read in all references, and passed consensus
-# For each consensus, find the best suited flutype
-# Cat all the consensus together in file called `tmp/cat/{SEGMENT}_{FLUTYPE}.fna`
-# Write files in subtypes/{SEGMENT}.txt with the flutype for each sample. 
-print("Determining closest subtypes")
-if not os.path.exists("tmp"):
-    os.mkdir("tmp")
+ALL_SEGMENTS = sorted(os.listdir(REFDIR))
+ALL_SUBTYPES = {s: [] for s in ALL_SEGMENTS}
+for segment in ALL_SEGMENTS:
+    for file in sorted(os.listdir(os.path.join(REFDIR, segment))):
+        ALL_SUBTYPES[segment].append(os.path.splitext(file)[0])
 
-if not os.path.exists("tmp/cat"):
-    os.mkdir("tmp/cat")
+###########################
+# This is the function that triggers the checkpoint. By accessing the blastout
+# checkpoint, the DAG "short-circuits" all the middle rules until the file
+# has been completed.
+def all_inputs(wildcards):
+    # This is the function that gets all the segment/type combinations into the DAG
+    trigger = checkpoints.blastall.get()
+    with open(f"tmp/flutypes.txt") as file:
+        combos = list(map(lambda s: s.partition('\t'), filter(None, map(str.strip, file))))
+        return [f"trees/{s}/{f}.pdf" for (s,_,f) in combos]
 
-if not os.path.exists("subtypes"):
-    os.mkdir("subtypes")
-
-shell(
-    f"{JULIA_COMMAND} {os.path.join(SNAKEDIR, 'scripts/minhash.jl')} "
-    "tmp/cat subtypes {REFDIR} {CONSENSUS_DIR}"
-)
-
-# Parse in the output
-def get_pairs():
-    files = list(filter(lambda f: f.endswith(".fna"), os.listdir("tmp/cat")))
-    files = [f[:-4] for f in files]
-    return [tuple(f.split("_")) for f in files]
-
-# PAIRS is a list of (segment, flutype)
-PAIRS = get_pairs()
-
-###############
-# Rules
-###############
 rule all:
-    input: lambda wc: [f"trees/{s}/{t}.pdf" for (s, t) in PAIRS]
+    input: all_inputs
+    output: "commit.txt"
+    params: SNAKEDIR
+    shell: "git -C {params} rev-parse --short HEAD > {output}"
 
-rule align_ref:
+###########################
+# Before checkpoint: BLASTn
+###########################
+# We use BLASTn to determine which files should be created
+rule cat_ref:
+    input: lambda wc: [os.path.join(REFDIR, segment, i + ".fna") for i in ALL_SUBTYPES[wc.segment]]
+    output: REFOUTDIR + "/{segment}.fna"
+    run:
+        with open(output[0], "w") as outfile:
+            for filename in input:
+                with open(filename) as infile:
+                    basename, _ = os.path.splitext(os.path.basename(filename))
+                    for line in map(str.strip, infile):
+                        if not line:
+                            continue
+
+                        if line.startswith('>'):
+                            print(line + '_' + basename, file=outfile)
+                        else:
+                            print(line, file=outfile)
+
+rule makeblastdb:
+    input: rules.cat_ref.output
+    output:
+        nin=REFOUTDIR + "/{segment}.fna" + ".nin",
+        nhr=REFOUTDIR + "/{segment}.fna" + ".nhr",
+        nsq=REFOUTDIR + "/{segment}.fna" + ".nsq"
+    shell: "makeblastdb -in {input} -dbtype nucl"
+
+rule gather_consensus:
+    output: expand("tmp/cat/{segment}.fna", segment=ALL_SEGMENTS)
+    params:
+        juliacmd=JULIA_COMMAND,
+        scriptpath=f"{SNAKEDIR}/scripts/gather_consensus.jl",
+        refdir=REFDIR,
+        consensus_dir=CONSENSUS_DIR
+    shell: "{params.juliacmd} {params.scriptpath} tmp/cat {params.refdir} {params.consensus_dir}"
+
+# TODO: Update to output relevant blast fields only. Also update the parsing script
+rule blastn:
+    input:
+        nin=REFOUTDIR + "/{segment}.fna" + ".nin",
+        nhr=REFOUTDIR + "/{segment}.fna" + ".nhr",
+        nsq=REFOUTDIR + "/{segment}.fna" + ".nsq",
+        fna="tmp/cat/{segment}.fna"
+    output: "tmp/blast/{segment}.blastout"
+    params:
+        basename=rules.cat_ref.output
+    shell: "blastn -query {input.fna} -db {params.basename} -outfmt '6 qacc sacc pident bitscore' > {output}"
+
+# TODO: Somehow warn if no hits were found for a segment
+# This also creates tmp/cat/{segment}_{flutype}.fna for all flutypes
+# but this cannot appear in the graph at this point, so it's
+# not part of the rule
+rule parse_blast:
+    input:
+        blast=rules.blastn.output,
+        cons=rules.gather_consensus.output
+    output: "tmp/flutypes/{segment}.txt"
+    params:
+        juliacmd=JULIA_COMMAND,
+        scriptpath=f"{SNAKEDIR}/scripts/parse_blast.jl",
+        segment=lambda wc: wc.segment,
+        catdir="tmp/cat"
+    shell:
+        "{params.juliacmd} {params.scriptpath} "
+        "{params.segment} {input.cons} {input.blast} {params.catdir} {output}"
+
+checkpoint blastall:
+    input: expand("tmp/flutypes/{segment}.txt", segment=ALL_SEGMENTS)
+    output: "tmp/flutypes.txt"
+    run:
+        combos = set()
+        for inpath in input:
+            segment, _ = os.path.splitext(os.path.basename(inpath))
+            with open(inpath) as infile:
+                for line in filter(None, map(str.strip, infile)):
+                    seqname, flutype = line.split('\t')
+                    combos.add((segment, flutype))
+
+        with open(output[0], "w") as outfile:
+            for (segment, flutype) in sorted(combos):
+                print(segment, flutype, sep='\t', file=outfile)
+
+##################
+# After checkpoint
+##################
+rule aln_ref:
     input: ancient(REFDIR + "/{segment}/{flutype}.fna")
     output: "tmp/refaln/{segment}_{flutype}.aln.fna"
     log: "tmp/log/refaln/{segment}_{flutype}.aln.log"
     shell: "mafft {input} > {output} 2> {log}"
 
-rule trim_aln:
-    input: ancient(rules.align_ref.output)
-    output: REFOUTDIR + "/{segment}/{flutype}.aln.trim.fna"
+rule trim_ref:
+    input: ancient(rules.aln_ref.output)
+    output: REFOUTDIR + "/{segment}_{flutype}.aln.trim.fna"
     log: "tmp/log/refaln/{segment}_{flutype}.trim.log"
     shell: "trimal -in {input} -out {output} -gt 0.9 -cons 60 2> {log}"
 
 rule guide_tree:
-    input: ancient(rules.trim_aln.output)
+    input: ancient(rules.trim_ref.output)
     output: "tmp/guide/{segment}_{flutype}.treefile"
     log: "tmp/log/guide/{segment}_{flutype}.log"
     threads: 2
@@ -102,12 +174,12 @@ rule guide_tree:
 
 rule move_guide_tree:
     input: ancient(rules.guide_tree.output)
-    output: REFOUTDIR + "/{segment}/{flutype}.treefile"
+    output: REFOUTDIR + "/{segment}_{flutype}.treefile"
     shell: "cp {input} {output}"
 
-rule merge_ref_cons:
+rule align_to_ref:
     input:
-        ref=rules.trim_aln.output,
+        ref=rules.trim_ref.output,
         con="tmp/cat/{segment}_{flutype}.fna"
     output: "tmp/merge/{segment}_{flutype}.aln.fna"
     log: "tmp/log/merge/{segment}_{flutype}.log"
@@ -115,8 +187,8 @@ rule merge_ref_cons:
 
 rule iqtree:
     input:
-        aln=rules.merge_ref_cons.output,
-        guide=REFOUTDIR + "/{segment}/{flutype}.treefile"
+        aln=rules.align_to_ref.output,
+        guide=REFOUTDIR + "/{segment}_{flutype}.treefile"
     output: "tmp/iqtree/{segment}_{flutype}.treefile"
     log: "tmp/log/iqtree/{segment}_{flutype}.log"
     threads: 2

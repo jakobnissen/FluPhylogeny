@@ -8,3 +8,4 @@ dependencies:
   - iqtree=2.1.2
   - snakemake=6.6.1
   - ete3=3.1.2
+  - blast=2.12.0
