@@ -23,7 +23,7 @@ function main(
 end
 
 eval(BlastParse.gen_blastparse_code(
-    (:qacc, :sacc, :qlen, :length, :pident, :bitscore),
+    (:qacc, :sacc, :qcovhsp, :pident, :bitscore),
     :parse_blast_io
 ))
 
@@ -107,7 +107,7 @@ function filter_blast!(rows::Vector{<:NamedTuple})
     # over at least 80% of the query
     filter!(rows) do row
         row.pident ≥ 0.8 &&
-        row.length / row.qlen ≥ 0.8
+        row.qcovhsp ≥ 0.8
     end
 end
 
