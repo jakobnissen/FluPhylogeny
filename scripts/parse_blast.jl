@@ -57,7 +57,7 @@ function get_best(blastin::AbstractString)::Dict{String, FluType}
     rows = open(Tools.parse_blast_io, blastin)
     filter_blast!(rows)
     Tools.keep_best!(rows)
-    return Dict(row.qacc => last(Tools.split_flutype(row.sacc)) for row in rows)
+    return Dict(row.qacc => last(split_flutype(row.sacc)) for row in rows)
 end
 
 function filter_blast!(rows::Vector{<:NamedTuple})
