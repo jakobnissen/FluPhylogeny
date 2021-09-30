@@ -68,7 +68,7 @@ rule all:
 ###########################
 # We use BLASTn to determine which files should be created
 rule cat_ref:
-    input: lambda wc: [os.path.join(REFDIR, segment, i + ".fna") for i in ALL_SUBTYPES[wc.segment]]
+    input: lambda wc: [os.path.join(REFDIR, wc.segment, i + ".fna") for i in ALL_SUBTYPES[wc.segment]]
     output: REFOUTDIR + "/{segment}.fna"
     run:
         with open(output[0], "w") as outfile:
@@ -119,8 +119,8 @@ rule blastn:
 rule parse_blast:
     input:
         blast=rules.blastn.output,
-        cons=rules.gather_cons.output
-    output: "tmp/flutypes/{segment}.txt"
+        cons="tmp/cat/{segment}.fna"
+    output: "flutypes/{segment}.txt"
     params:
         juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/parse_blast.jl",
@@ -131,7 +131,7 @@ rule parse_blast:
         "{params.segment} {input.cons} {input.blast} {params.catdir} {output}"
 
 checkpoint blastall:
-    input: expand("tmp/flutypes/{segment}.txt", segment=ALL_SEGMENTS)
+    input: expand("flutypes/{segment}.txt", segment=ALL_SEGMENTS)
     output: "tmp/flutypes.txt"
     run:
         combos = set()
