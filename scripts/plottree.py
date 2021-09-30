@@ -5,7 +5,7 @@ flutype = snakemake.wildcards["flutype"]
 pdfpath = snakemake.output[0]
 newickpath = snakemake.input[0]
 
-with open(f"tmp/flutypes/{segment}.txt") as file:
+with open(f"flutypes/{segment}.txt") as file:
     names = set()
     lines = map(str.split, filter(None, map(str.strip, file)))
     for (seqname, _flutype) in lines:

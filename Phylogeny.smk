@@ -19,6 +19,8 @@ TOP_REF_DIR = os.path.abspath(os.path.expanduser(config["ref"]))
 if not os.path.isdir(TOP_REF_DIR):
     raise NotADirectoryError(TOP_REF_DIR)
 
+TOP_REFOUT_DIR = os.path.join(TOP_REF_DIR, "refout")
+
 # Get host
 if "host" not in config:
     raise KeyError("You must supply host: '--config host=human'")
@@ -30,7 +32,7 @@ if HOST not in possible_hosts:
     raise KeyError(f"Directory for host {HOST} not found in {os.path.join(TOP_REF_DIR, 'phylo')}")
 
 REFDIR = os.path.join(TOP_REF_DIR, "phylo", HOST)
-REFOUTDIR = os.path.join(TOP_REF_DIR, "refout", "phylo", HOST)
+REFOUTDIR = os.path.join(TOP_REFOUT_DIR, "phylo", HOST)
 
 # Get consensus dir
 if "consensus" not in config:
@@ -53,9 +55,15 @@ for segment in ALL_SEGMENTS:
 def all_inputs(wildcards):
     # This is the function that gets all the segment/type combinations into the DAG
     trigger = checkpoints.blastall.get()
+    files = []
     with open(f"tmp/flutypes.txt") as file:
         combos = list(map(lambda s: s.partition('\t'), filter(None, map(str.strip, file))))
-        return [f"trees/{s}/{f}.pdf" for (s,_,f) in combos]
+        files.extend([f"trees/{s}/{f}.pdf" for (s,_,f) in combos])
+
+    if HOST == "human":
+        files.append("subtypes.txt")
+
+    return files
 
 rule all:
     input: all_inputs
@@ -203,3 +211,40 @@ rule plot_tree:
     input: rules.move_iqtree.output
     output: "trees/{segment}/{flutype}.pdf"
     script: SNAKEDIR + "/scripts/plottree.py"
+
+if HOST == "human":
+    rule makeblastdb_human:
+        input: TOP_REF_DIR + "/humansubtypes.fna"
+        output:
+            nin=TOP_REFOUT_DIR + "/humansubtypes" + ".nin",
+            nhr=TOP_REFOUT_DIR + "/humansubtypes" + ".nhr",
+            nsq=TOP_REFOUT_DIR + "/humansubtypes" + ".nsq"
+        params:
+            outbase = TOP_REFOUT_DIR + "/humansubtypes"
+        shell: "makeblastdb -in {input} -out {params.outbase} -dbtype nucl"
+
+    rule cat_cons:
+        output: "tmp/reassort/all.fna"
+        params:
+            juliacmd=JULIA_COMMAND,
+            scriptpath=f"{SNAKEDIR}/scripts/cat_consensus.jl",
+            consensus_dir=CONSENSUS_DIR
+        shell: "{params.juliacmd} {params.scriptpath} tmp/reassort/all.fna {params.consensus_dir}"
+
+    rule blastn_human:
+        input:
+            nin=TOP_REFOUT_DIR + "/humansubtypes.nin",
+            fna="tmp/reassort/all.fna"
+        output: "tmp/reassort/all.blastout"
+        params: TOP_REFOUT_DIR + "/humansubtypes"
+        shell: "blastn -query {input.fna} -db {params} -outfmt '6 qacc sacc qcovhsp pident bitscore' > {output}"
+
+    rule reassort:
+        input:
+            fasta="tmp/reassort/all.fna",
+            blast=rules.blastn_human.output
+        output: "subtypes.txt"
+        params:
+            juliacmd=JULIA_COMMAND,
+            scriptpath=f"{SNAKEDIR}/scripts/reassort.jl",
+        shell: "{params.juliacmd} {params.scriptpath} {input.blast} {input.fasta} {output}"
