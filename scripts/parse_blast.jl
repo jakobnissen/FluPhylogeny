@@ -1,96 +1,163 @@
-# Purpose -- applied to one segment at a time:
+# Purpose:
 # Write "subtypes" with seqname \t flutype for all sequences
 # Write tmp/cat/{segment}_{flutype}.fna for all present flutypes
 
 include("tools.jl")
-using .Tools
+using .Tools: Tools, FluType, Sample, Seq, name
 using FASTX: FASTA
+using InfluenzaCore
+using ErrorTypes: Option, none, some, is_error, @unwrap_or
+using BioSequences: LongDNASeq
+
+const N_SEGMENTS = length(instances(Segment))
+const SegmentTuple{T} = NTuple{N_SEGMENTS, T}
+
+ifilter(f) = x -> Iterators.filter(f, x)
+imap(f) = x -> Iterators.map(f, x)
+
+# Fuck Missing, seriously
+struct NoSegment end
+struct NoMatch end
+Base.print(io::IO, ::NoMatch) = print(io, "No match")
+
+struct GenoType
+    name::String
+    # nothing if the segment is not considered
+    v::Vector{Union{FluType, Nothing}}
+
+    function GenoType(name::AbstractString, v::Vector{Union{FluType, Nothing}})
+        if length(v) != N_SEGMENTS
+            error("Must be $N_SEGMENTS long")
+        end
+        new(convert(String, name), v)
+    end
+end
+
+struct SampleGenoType
+    sample::Sample
+    v::Vector{Union{FluType, NoMatch, NoSegment}}
+
+    function SampleGenoType(name::Sample, v::Vector{Union{FluType, NoMatch, NoSegment}})
+        if length(v) != N_SEGMENTS
+            error("Must be $N_SEGMENTS long")
+        end
+        new(name, v)
+    end
+end
+
+function flutypes(g::Union{GenoType, SampleGenoType})
+    ((Segment(i-1), f::FluType) for (i,f) in enumerate(g.v) if f isa FluType)
+end
+
+function hits(g::SampleGenoType)
+    ((Segment(i-1), f::Union{NoMatch, FluType}) for (i,f) in enumerate(g.v) if f isa Union{NoMatch, FluType})
+end
+
+# Could src be an instance of dst?
+function is_compatible(sample::SampleGenoType, genotype::GenoType)
+    all(1:N_SEGMENTS) do i
+        s, g = sample.v[i], genotype.v[i]
+        s isa NoSegment || isnothing(g) || s == g
+    end
+end
+
+# is src actually an instance of dst?
+function is_match(sample::SampleGenoType, genotype::GenoType)
+    all(1:N_SEGMENTS) do i
+        s, g = sample.v[i], genotype.v[i]
+        isnothing(g) || s == g
+    end
+end
+
+function missing_segments(sample::SampleGenoType, genotype::GenoType)
+    [Segment(i-1) for i in 1:N_SEGMENTS if sample.v[i] isa NoSegment && genotype.v[i] isa FluType]
+end
 
 function main(
-    segment::AbstractString,
-    cons_path::AbstractString,
-    blastin::AbstractString,
-    cat_dir::AbstractString,
-    subtypes::AbstractString
+    genotype_report_path::AbstractString, # output: genotypes.txt
+    genotypes_out_path::AbstractString,  # output: tmp/genotypes.tsv
+    cattypes_dir::AbstractString, # output: dir to put {segment}_{flutype}.fna
+    tree_segments_str::AbstractString, # comma-sep string of segments to
+        # write {segment}_{flutype}.fna for
+    known_genotypes_path::AbstractString, # input: genotypes.tsv ref input
+    cat_dir::AbstractString, # input: dir w. concatenated consensus seqs
+    blast_dir::AbstractString # input: dir w. BLAST results
 )
-    consensus = load_consensus(cons_path)
-    best = get_best(blastin)
-    write_best(segment, cat_dir, consensus, best)
+    isdir(cattypes_dir) || mkpath(cattypes_dir)
+    consensus = load_consensus(cat_dir)
+    sample_genotypes = load_sample_genotypes(blast_dir, consensus)
+    known_genotypes = load_known_genotypes(known_genotypes_path)
 
-    open(subtypes, "w") do io
-        for (seqname, flutype) in sort(collect(best))
-            println(io, seqname, '\t', name(flutype))
-        end
-    end
+    # Output: tmp/genotypes.tsv
+    write_genotypes(genotypes_out_path, sample_genotypes)
 
+    # Output: genotypes.txt
+    write_genotype_report(genotype_report_path, known_genotypes, sample_genotypes)
+
+    # Output: tmp/cat/{segment}_{flutype}.fna for segments in TREE_SEGMENTS
+    tree_segments = Set(map(i -> parse(Segment, i), split(tree_segments_str, ',')))
+    
+    write_fasta_combos(cattypes_dir, tree_segments, consensus, sample_genotypes)
     return nothing
 end
 
-"""IQ-TREE will rename any sequences that does not conform to this criteria.
-It's probably better to warn here instead of later."""
-function is_valid_seqname(s::AbstractString)
-    all(s) do char
-        isletter(char) ||
-        char in '0':'9' ||
-        char in ('.', '-', '_')
-    end
-end
-
-# Input: The gathered consensus at tmp/cat/{segment}.fna
-function load_consensus(cons_path::AbstractString)::Vector{Seq}
+function load_consensus(
+    cons_dir::AbstractString # dir of {segment}.fna
+)::Vector{Tuple{Sample, SegmentTuple{Option{LongDNASeq}}}}
     record = FASTA.Record()
-    open(FASTA.Reader, cons_path) do reader
-        seqs = Seq[]
-        while !eof(reader)
-            read!(reader, record)
-            seq = Seq(record)
-            if !is_valid_seqname(seq.name)
-                @warn "Invalid sequence name: \"$(seq.name)\". Will be renamed by IQ-TREE."
-            end
-            push!(seqs, seq)
-        end
-        return seqs
-    end
-end
-
-function get_best(blastin::AbstractString)::Dict{String, FluType}
-    rows = open(Tools.parse_blast_io, blastin)
-    filter_blast!(rows)
-    Tools.keep_best!(rows)
-    return Dict(row.qacc => last(split_flutype(row.sacc)) for row in rows)
-end
-
-function filter_blast!(rows::Vector{<:NamedTuple})
-    # For now, just some haphazardly chosen filters: Minimum 80% identity
-    # over at least 80% of the query
-    filter!(rows) do row
-        row.pident ≥ 0.8 &&
-        row.qcovhsp ≥ 0.8
-    end
-end
-
-function write_best(
-    segment::AbstractString,
-    cat_dir::AbstractString,
-    consensus::Vector{Seq},
-    best::Dict{String, FluType}
-)
-    by_flutype = Dict{FluType, Vector{Seq}}()
-    for seq in consensus
-        if haskey(best, seq.name)
-            flutype = best[seq.name]
-            push!(get!(valtype(by_flutype), by_flutype, flutype), seq)
-        else
-            @warn "Sequence \"$(seq.name)\" does not match any flutype!"
-        end
-    end
-    for (flutype, seqs) in by_flutype
-        open(FASTA.Writer, joinpath(cat_dir, "$(segment)_$(name(flutype)).fna")) do writer
-            for seq in seqs
-                write(writer, FASTA.Record(seq.name, seq.seq))
+    intermediate = Dict{Sample, Vector{Option{LongDNASeq}}}()
+    for file in readdir(cons_dir, join=true)
+        segment = parse(Segment, basename(first(splitext(file))))
+        open(FASTA.Reader, file) do reader
+            while !eof(reader)
+                read!(reader, record)
+                sample = let
+                    h = FASTA.header(record)
+                    h === nothing ? error("No header in record in $file") : Sample(h)
+                end
+                if !haskey(intermediate, sample)
+                    intermediate[sample] = fill(none(LongDNASeq), N_SEGMENTS)
+                end
+                seq = FASTA.sequence(LongDNASeq, record)
+                intermediate[sample][Integer(segment) + 1] = some(seq)
             end
         end
     end
+    return [(s, SegmentTuple(v)) for (s, v) in intermediate]
+end
+
+function load_sample_genotypes(
+    blast_dir::AbstractString,
+    consensus::Vector{Tuple{Sample, SegmentTuple{Option{LongDNASeq}}}}
+)::Vector{SampleGenoType}
+    
+    # Initialize each segment with NoSegment
+    sample_genotype_dict = Dict(
+        sample => 
+        fill!(Vector{Union{NoSegment, NoMatch, FluType}}(undef, N_SEGMENTS), NoSegment())
+        for (sample, _) in consensus
+    )
+
+    # Set all the ones without missing segments to NoMatch
+    for (sample, seqtuple) in consensus
+        for (i, mseq) in enumerate(seqtuple)
+            is_error(mseq) || (sample_genotype_dict[sample][i] = NoMatch())
+        end
+    end
+
+    # Now read blast and set the matched segments to flutypes
+    for file in readdir(blast_dir, join=true)
+        segment = parse(Segment, basename(first(splitext(file))))
+        rows = open(Tools.parse_blast_io, file)
+        filter_blast!(rows)
+        Tools.keep_best!(rows)
+        for row in rows
+            sample = Sample(row.qacc)
+            flutype = last(split_flutype(row.sacc))
+            sample_genotype_dict[sample][Integer(segment) + 1] = flutype
+        end
+    end
+    return [SampleGenoType(k, v) for (k, v) in sample_genotype_dict]
 end
 
 @noinline bad_trailing(s) = error("Cannot parse as NAME_FLUTYPE: \"" * s, '"')
@@ -104,9 +171,162 @@ function split_flutype(s_::Union{String, SubString{String}})
     return (name, flutype)
 end
 
-if length(ARGS) != 5
-    println("Usage: julia parse_blast.jl segment catfna blastout catdir flutypes")
-    exit(1)
-else
-    main(ARGS...)
+function filter_blast!(rows::Vector{<:NamedTuple})
+    # For now, just some haphazardly chosen filters: Minimum 80% identity
+    # over at least 80% of the query
+    filter!(rows) do row
+        row.pident ≥ 0.8 &&
+        row.qcovhsp ≥ 0.8
+    end
+end
+
+function load_known_genotypes(path::AbstractString)::Vector{GenoType}
+    lines = eachline(path) |>
+        imap(strip) |>
+        ifilter(!isempty) |>
+        imap(x -> split(x, '\t')) |>
+        collect
+    segments = map(i -> parse(Segment, i), lines[1][2:end])
+    result = GenoType[]
+    v = fill!(Vector{Union{Nothing, FluType}}(undef, N_SEGMENTS), nothing)
+    for line in lines[2:end]
+        fill!(v, nothing)
+        for (segment, f) in zip(segments, line[2:end])
+            v[Integer(segment) + 1] = FluType(f)
+        end
+        push!(result, GenoType(first(line), copy(v)))
+    end
+    return result
+end
+
+function write_genotypes(
+    path::AbstractString,
+    sample_genotypes::Vector{SampleGenoType}
+)
+    open(path, "w") do io
+        println(io, "sample\tsegment\tflutype")
+        for genotype in sample_genotypes
+            for (segment, flutype) in flutypes(genotype)
+                println(io, genotype.sample, '\t', segment, '\t', flutype)
+            end
+        end
+    end
+end
+
+# Output: genotypes.txt
+function write_genotype_report(
+    genotype_report_path::AbstractString,
+    known_genotypes::Vector{GenoType},
+    sample_genotypes::Vector{SampleGenoType}
+)
+    if isempty(known_genotypes) || isempty(sample_genotypes)
+        touch(genotype_report_path)
+        return nothing
+    end
+
+    good = Vector{Tuple{SampleGenoType, GenoType}}()
+    indeterminate = Vector{Tuple{SampleGenoType, Vector{GenoType}}}()
+    new = Vector{SampleGenoType}()
+
+    possible_genotypes = GenoType[]
+    for sample_genotype in sample_genotypes
+        empty!(possible_genotypes)
+        for genotype in known_genotypes
+            if is_compatible(sample_genotype, genotype)
+                push!(possible_genotypes, genotype)
+            end
+        end
+
+        # If only one possibility, and precise match
+        if length(possible_genotypes) == 1
+            push!(good, (sample_genotype, first(possible_genotypes)))
+        elseif isempty(possible_genotypes)
+            push!(new, sample_genotype)
+        else
+            push!(indeterminate, (sample_genotype, copy(possible_genotypes)))
+        end
+    end
+
+    if !isempty(new)
+        @warn "Possible new genotype detected, see genotypes.txt report"
+    end
+
+    # Now write report
+    open(genotype_report_path, "w") do io
+        if !isempty(good)
+            println(io, "Known genotypes:")
+            for (s, g) in good
+                print(io, '\t', s.sample, '\t', g.name)
+                ms = missing_segments(s, g)
+                if !isempty(ms)
+                    print(io, " (missing: ", join(ms, ','), ')')
+                end
+                println(io)
+            end
+            println(io)
+        end
+        if !isempty(indeterminate)
+            println(io, "Indeterminate genotypes:")
+            for (g, gs) in indeterminate
+                println(io, '\t', g.sample)
+                for (seg, flutype) in flutypes(g)
+                    println(io, "\t\t", seg, '\t', flutype)
+                end
+                println(io)
+                for g_ in gs
+                    println(io, "\t\tMatches ", g_.name)
+                end
+            end
+            println(io)
+        end
+        if !isempty(new)
+            println(io, "New genotypes:")
+            for g in new
+                println(io, '\t', g.sample)
+                for (seg, hit) in hits(g)
+                    println(io, "\t\t", seg, '\t', hit)
+                end
+            end
+        end
+    end
+    return nothing
+end
+
+function write_fasta_combos(
+    cattypes_dir::AbstractString,
+    tree_segments::Set{Segment},
+    consensus::Vector{Tuple{Sample, SegmentTuple{Option{LongDNASeq}}}},
+    sample_genotypes::Vector{SampleGenoType}
+)
+    genotype_of_sample = Dict(g.sample => g for g in sample_genotypes)
+    by_combo = Dict{Tuple{Segment, FluType}, Vector{FASTA.Record}}()
+    for (sample, mseqs) in consensus
+        sample_genotype = genotype_of_sample[sample]
+        for (segment, flutype) in flutypes(sample_genotype)
+            segment ∈ tree_segments || continue
+            seq = @unwrap_or mseqs[Integer(segment) + 1] continue
+            record = FASTA.Record(name(sample), seq)
+            push!(get!(valtype(by_combo), by_combo, (segment, flutype)), record)
+        end
+    end
+    for ((segment, flutype), records) in by_combo
+        path = joinpath(cattypes_dir, "$(segment)_$(name(flutype)).fna")
+        open(FASTA.Writer, path) do writer
+            foreach(rec -> write(writer, rec), records)
+        end
+    end
+    return nothing
+end 
+
+if abspath(PROGRAM_FILE) == @__FILE__
+    if length(ARGS) != 7
+        println(
+            "Usage: julia parse_blast.jl genotype_report_path " * 
+            "genotype_out_path cattypes_dir tree_segments_str " *
+            " known_genotypes_path cat_dir blast_dir"
+        )
+        exit(1)
+    else
+        main(ARGS...)
+    end
 end

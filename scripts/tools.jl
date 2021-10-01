@@ -11,6 +11,7 @@ eval(BlastParse.gen_blastparse_code(
     :parse_blast_io
 ))
 
+# These are simply wrappers around strings
 for T in (:Sample, :FluType)
     @eval begin
         struct $T

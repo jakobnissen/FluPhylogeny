@@ -1,16 +1,14 @@
 import ete3
 
-segment = snakemake.wildcards["segment"]
-flutype = snakemake.wildcards["flutype"]
 pdfpath = snakemake.output[0]
 newickpath = snakemake.input[0]
+fnapath = snakemake.params[0]
 
-with open(f"flutypes/{segment}.txt") as file:
+with open(fnapath) as file:
     names = set()
-    lines = map(str.split, filter(None, map(str.strip, file)))
-    for (seqname, _flutype) in lines:
-        if flutype == _flutype:
-            names.add(seqname)
+    for line in file:
+        if line.startswith('>'):
+            names.add(line[1:].strip())
 
 with open(newickpath) as file:
     tree = ete3.Tree(file.read())
