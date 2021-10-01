@@ -67,7 +67,7 @@ def all_inputs(wildcards):
 
 rule all:
     input: all_inputs
-    output: "commit.txt"
+    output: "commit_phylogeny.txt"
     params: SNAKEDIR
     shell: "git -C {params} rev-parse --short HEAD > {output}"
 
@@ -158,19 +158,19 @@ checkpoint blastall:
 # After checkpoint
 ##################
 rule aln_ref:
-    input: ancient(REFDIR + "/{segment}/{flutype}.fna")
+    input: REFDIR + "/{segment}/{flutype}.fna"
     output: "tmp/refaln/{segment}_{flutype}.aln.fna"
     log: "tmp/log/refaln/{segment}_{flutype}.aln.log"
     shell: "mafft {input} > {output} 2> {log}"
 
 rule trim_ref:
-    input: ancient(rules.aln_ref.output)
+    input: rules.aln_ref.output
     output: REFOUTDIR + "/{segment}_{flutype}.aln.trim.fna"
     log: "tmp/log/refaln/{segment}_{flutype}.trim.log"
     shell: "trimal -in {input} -out {output} -gt 0.9 -cons 60 2> {log}"
 
 rule guide_tree:
-    input: ancient(rules.trim_ref.output)
+    input: rules.trim_ref.output
     output: "tmp/guide/{segment}_{flutype}.treefile"
     log: "tmp/log/guide/{segment}_{flutype}.log"
     threads: 2
@@ -178,7 +178,7 @@ rule guide_tree:
     shell: "iqtree -s {input} -pre {params} -T {threads} -m HKY+G2 --redo > {log}"
 
 rule move_guide_tree:
-    input: ancient(rules.guide_tree.output)
+    input: rules.guide_tree.output
     output: REFOUTDIR + "/{segment}_{flutype}.treefile"
     shell: "cp {input} {output}"
 
