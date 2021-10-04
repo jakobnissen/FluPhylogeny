@@ -1,9 +1,10 @@
 # Purpose:
-# Write "subtypes" with seqname \t flutype for all sequences
-# Write tmp/cat/{segment}_{flutype}.fna for all present flutypes
+# Write "tmp/genotypes.tsv" with sample \t seqname \t flutype for all sequences
+# Create genotypes.txt report
+# Write tmp/cat/{segment}_{flutype}.fna for all present segment/flutype combos
 
 include("tools.jl")
-using .Tools: Tools, FluType, Sample, Seq, name
+using .Tools: Tools, FluType, Sample, name
 using FASTX: FASTA
 using InfluenzaCore
 using ErrorTypes: Option, none, some, is_error, @unwrap_or
@@ -15,7 +16,6 @@ const SegmentTuple{T} = NTuple{N_SEGMENTS, T}
 ifilter(f) = x -> Iterators.filter(f, x)
 imap(f) = x -> Iterators.map(f, x)
 
-# Fuck Missing, seriously
 struct NoSegment end
 struct NoMatch end
 Base.print(io::IO, ::NoMatch) = print(io, "No match")
@@ -157,7 +157,8 @@ function load_sample_genotypes(
             sample_genotype_dict[sample][Integer(segment) + 1] = flutype
         end
     end
-    return [SampleGenoType(k, v) for (k, v) in sample_genotype_dict]
+    v = [SampleGenoType(k, v) for (k, v) in sample_genotype_dict]
+    return sort!(v, by=i -> i.sample)
 end
 
 @noinline bad_trailing(s) = error("Cannot parse as NAME_FLUTYPE: \"" * s, '"')
@@ -188,15 +189,14 @@ function load_known_genotypes(path::AbstractString)::Vector{GenoType}
         collect
     segments = map(i -> parse(Segment, i), lines[1][2:end])
     result = GenoType[]
-    v = fill!(Vector{Union{Nothing, FluType}}(undef, N_SEGMENTS), nothing)
     for line in lines[2:end]
-        fill!(v, nothing)
+        v = fill!(Vector{Union{Nothing, FluType}}(undef, N_SEGMENTS), nothing)
         for (segment, f) in zip(segments, line[2:end])
             v[Integer(segment) + 1] = FluType(f)
         end
-        push!(result, GenoType(first(line), copy(v)))
+        push!(result, GenoType(first(line), v))
     end
-    return result
+    return sort!(result, by=i -> i.name)
 end
 
 function write_genotypes(
@@ -310,7 +310,7 @@ function write_fasta_combos(
         end
     end
     for ((segment, flutype), records) in by_combo
-        path = joinpath(cattypes_dir, "$(segment)_$(name(flutype)).fna")
+        path = joinpath(cattypes_dir, "$(segment)_$(flutype).fna")
         open(FASTA.Writer, path) do writer
             foreach(rec -> write(writer, rec), records)
         end
