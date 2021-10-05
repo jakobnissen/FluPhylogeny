@@ -6,7 +6,7 @@
 import os
 
 SNAKEDIR = os.path.dirname(workflow.snakefile)
-JULIA_COMMAND = f"julia --startup-file=no --project={SNAKEDIR}"
+JULIA_COMMAND = f"JULIA_LOAD_PATH='{SNAKEDIR}' julia --startup-file=no"
 
 ###############
 # Parse config
@@ -91,11 +91,16 @@ rule all:
     input: all_inputs
     output: "commit_phylogeny.txt"
     params: SNAKEDIR
-    shell: "git -C {params} rev-parse --short HEAD > {output}"
+    shell: "git -C {params:q} rev-parse --short HEAD > {output}"
 
 ###########################
 # Before checkpoint: BLASTn
 ###########################
+rule instantiate:
+    output: "tmp/instantiated"
+    params: JULIA_COMMAND
+    shell: "{params} -e 'using Pkg; Pkg.instantiate()' && touch {output}"
+
 # Cat all refs for each segment together as one to determine the best hit for each segment
 rule cat_ref:
     input: lambda wc: [os.path.join(REFDIR, "segments", wc.segment, i + ".fna") for i in ALL_SEGTYPES[wc.segment]]
@@ -120,16 +125,17 @@ rule makeblastdb:
         nin=REFOUTDIR + "/{segment}.fna" + ".nin",
         nhr=REFOUTDIR + "/{segment}.fna" + ".nhr",
         nsq=REFOUTDIR + "/{segment}.fna" + ".nsq"
-    shell: "makeblastdb -in {input} -dbtype nucl"
+    shell: "makeblastdb -in {input:q} -dbtype nucl"
 
 rule gather_cons:
+    input: "tmp/instantiated"
     output: expand("tmp/catcons/{segment}.fna", segment=ALL_SEGMENTS)
     params:
         juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/gather_consensus.jl",
         segment_dir=os.path.join(REFDIR, "segments"),
         consensus_dir=CONSENSUS_DIR
-    shell: "{params.juliacmd} {params.scriptpath} tmp/catcons {params.segment_dir} {params.consensus_dir}"
+    shell: "{params.juliacmd} {params.scriptpath:q} tmp/catcons {params.segment_dir:q} {params.consensus_dir:q}"
 
 rule blastn:
     input:
@@ -164,9 +170,9 @@ checkpoint genotypes:
         tree_segments=",".join(TREE_SEGMENTS),
         known_genotypes=os.path.join(REFDIR, "genotypes.tsv")
     shell:
-        "{params.juliacmd} {params.scriptpath} "
+        "{params.juliacmd} {params.scriptpath:q} "
         "{output.genotypes} {output.flutypes} {params.outconsdir} "
-        "{params.tree_segments} {params.known_genotypes} {params.catconsdir} "
+        "{params.tree_segments} {params.known_genotypes:q} {params.catconsdir} "
         "{params.blastdir}"
 
 ##################
@@ -177,13 +183,13 @@ rule aln_ref:
     input: REFDIR + "/segments/{segment}/{flutype}.fna"
     output: "tmp/refaln/{segment}_{flutype}.aln.fna"
     log: "tmp/log/refaln/{segment}_{flutype}.aln.log"
-    shell: "mafft {input} > {output} 2> {log}"
+    shell: "mafft {input:q} > {output} 2> {log}"
 
 rule trim_ref:
     input: rules.aln_ref.output
     output: REFOUTDIR + "/segments/{segment}_{flutype}.aln.trim.fna"
     log: "tmp/log/refaln/{segment}_{flutype}.trim.log"
-    shell: "trimal -in {input} -out {output} -gt 0.9 -cons 60 2> {log}"
+    shell: "trimal -in {input} -out {output:q} -gt 0.9 -cons 60 2> {log}"
 
 rule guide_tree:
     input: rules.trim_ref.output
@@ -191,12 +197,12 @@ rule guide_tree:
     log: "tmp/log/guide/{segment}_{flutype}.log"
     threads: 2
     params: "tmp/guide/{segment}_{flutype}"
-    shell: "iqtree -s {input} -pre {params} -T {threads} -m HKY+G2 --redo > {log}"
+    shell: "iqtree -s {input:q} -pre {params} -T {threads} -m HKY+G2 --redo > {log}"
 
 rule move_guide_tree:
     input: rules.guide_tree.output
     output: REFOUTDIR + "/{segment}_{flutype}.treefile"
-    shell: "cp {input} {output}"
+    shell: "cp {input} {output:q}"
 
 rule align_to_ref:
     input:
@@ -204,7 +210,7 @@ rule align_to_ref:
         con="tmp/cattypes/{segment}_{flutype}.fna"
     output: "tmp/merge/{segment}_{flutype}.aln.fna"
     log: "tmp/log/merge/{segment}_{flutype}.log"
-    shell: "mafft --add {input.con} --keeplength {input.ref} > {output} 2> {log}"
+    shell: "mafft --add {input.con} --keeplength {input.ref:q} > {output} 2> {log}"
 
 rule iqtree:
     input:
@@ -216,7 +222,7 @@ rule iqtree:
     params: "tmp/iqtree/{segment}_{flutype}"
     shell:
         "iqtree -s {input.aln} -pre {params} "
-        "-g {input.guide} -T {threads} -m HKY+G2 --redo > {log}"
+        "-g {input.guide:q} -T {threads} -m HKY+G2 --redo > {log}"
 
 rule move_iqtree:
     input: rules.iqtree.output
