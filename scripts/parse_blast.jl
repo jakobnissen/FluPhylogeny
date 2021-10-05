@@ -16,10 +16,18 @@ const SegmentTuple{T} = NTuple{N_SEGMENTS, T}
 ifilter(f) = x -> Iterators.filter(f, x)
 imap(f) = x -> Iterators.map(f, x)
 
-struct NoSegment end
-struct NoMatch end
-Base.print(io::IO, ::NoMatch) = print(io, "No match")
+@enum MatchFailure::UInt8 NoSegment NoMatch
 
+function Base.print(io::IO, m::MatchFailure)
+    m === NoSegment ? println(io, "No segment") :
+    m === NoMatch ? println(io, "No match") :
+    error()
+end
+
+# Random optimization thought:
+# If this ever bottlenecks, then enumerate all flutypes for each segment in 5 bits
+# Store the genotype in a single int.
+# Then use bitwise operations to compare genotypes
 struct GenoType
     name::String
     # nothing if the segment is not considered
@@ -35,9 +43,9 @@ end
 
 struct SampleGenoType
     sample::Sample
-    v::Vector{Union{FluType, NoMatch, NoSegment}}
+    v::Vector{Union{FluType, MatchFailure}}
 
-    function SampleGenoType(name::Sample, v::Vector{Union{FluType, NoMatch, NoSegment}})
+    function SampleGenoType(name::Sample, v::Vector{Union{FluType, MatchFailure}})
         if length(v) != N_SEGMENTS
             error("Must be $N_SEGMENTS long")
         end
@@ -50,14 +58,14 @@ function flutypes(g::Union{GenoType, SampleGenoType})
 end
 
 function hits(g::SampleGenoType)
-    ((Segment(i-1), f::Union{NoMatch, FluType}) for (i,f) in enumerate(g.v) if f isa Union{NoMatch, FluType})
+    ((Segment(i-1), f) for (i,f) in enumerate(g.v) if f != NoSegment)
 end
 
 # Could src be an instance of dst?
 function is_compatible(sample::SampleGenoType, genotype::GenoType)
     all(1:N_SEGMENTS) do i
         s, g = sample.v[i], genotype.v[i]
-        s isa NoSegment || isnothing(g) || s == g
+        s == NoSegment || isnothing(g) || s == g
     end
 end
 
@@ -70,7 +78,7 @@ function is_match(sample::SampleGenoType, genotype::GenoType)
 end
 
 function missing_segments(sample::SampleGenoType, genotype::GenoType)
-    [Segment(i-1) for i in 1:N_SEGMENTS if sample.v[i] isa NoSegment && genotype.v[i] isa FluType]
+    [Segment(i-1) for i in 1:N_SEGMENTS if sample.v[i] == NoSegment && genotype.v[i] isa FluType]
 end
 
 function main(
@@ -134,14 +142,14 @@ function load_sample_genotypes(
     # Initialize each segment with NoSegment
     sample_genotype_dict = Dict(
         sample => 
-        fill!(Vector{Union{NoSegment, NoMatch, FluType}}(undef, N_SEGMENTS), NoSegment())
+        fill!(Vector{Union{MatchFailure, FluType}}(undef, N_SEGMENTS), NoSegment)
         for (sample, _) in consensus
     )
 
     # Set all the ones without missing segments to NoMatch
     for (sample, seqtuple) in consensus
         for (i, mseq) in enumerate(seqtuple)
-            is_error(mseq) || (sample_genotype_dict[sample][i] = NoMatch())
+            is_error(mseq) || (sample_genotype_dict[sample][i] = NoMatch)
         end
     end
 
@@ -181,6 +189,7 @@ function filter_blast!(rows::Vector{<:NamedTuple})
     end
 end
 
+# Assumes format is .tsv
 function load_known_genotypes(path::AbstractString)::Vector{GenoType}
     lines = eachline(path) |>
         imap(strip) |>
