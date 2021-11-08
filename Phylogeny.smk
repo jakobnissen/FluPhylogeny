@@ -97,9 +97,9 @@ rule all:
 # Before checkpoint: BLASTn
 ###########################
 rule instantiate:
-    output: "tmp/instantiated"
+    output: touch(TOP_REFOUT_DIR +  "/phylo_instantiated")
     params: JULIA_COMMAND
-    shell: "{params} -e 'using Pkg; Pkg.instantiate()' && touch {output}"
+    shell: "{params} -e 'using Pkg; Pkg.resolve(); Pkg.instantiate()'"
 
 # Cat all refs for each segment together as one to determine the best hit for each segment
 rule cat_ref:
@@ -128,7 +128,7 @@ rule makeblastdb:
     shell: "makeblastdb -in {input:q} -dbtype nucl"
 
 rule gather_cons:
-    input: "tmp/instantiated"
+    input: TOP_REFOUT_DIR +  "/phylo_instantiated"
     output: expand("tmp/catcons/{segment}.fna", segment=ALL_SEGMENTS)
     params:
         juliacmd=JULIA_COMMAND,
