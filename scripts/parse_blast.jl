@@ -4,9 +4,9 @@
 # Write tmp/cat/{segment}_{flutype}.fna for all present segment/flutype combos
 
 include("tools.jl")
-using .Tools: Tools, FluType, Sample, name
+using .Tools
+using Influenza
 using FASTX: FASTA
-using InfluenzaCore
 using ErrorTypes: Option, none, some, is_error, @unwrap_or
 using BioSequences: LongDNASeq
 
@@ -25,15 +25,15 @@ function Base.print(io::IO, m::MatchFailure)
 end
 
 # Random optimization thought:
-# If this ever bottlenecks, then enumerate all flutypes for each segment in 5 bits
+# If this ever bottlenecks, then enumerate all clades for each segment in 5 bits
 # Store the genotype in a single int.
 # Then use bitwise operations to compare genotypes
 struct GenoType
     name::String
     # nothing if the segment is not considered
-    v::Vector{Union{FluType, Nothing}}
+    v::Vector{Union{Clade, Nothing}}
 
-    function GenoType(name::AbstractString, v::Vector{Union{FluType, Nothing}})
+    function GenoType(name::AbstractString, v::Vector{Union{Clade, Nothing}})
         if length(v) != N_SEGMENTS
             error("Must be $N_SEGMENTS long")
         end
@@ -43,9 +43,9 @@ end
 
 struct SampleGenoType
     sample::Sample
-    v::Vector{Union{FluType, MatchFailure}}
+    v::Vector{Union{Clade, MatchFailure}}
 
-    function SampleGenoType(name::Sample, v::Vector{Union{FluType, MatchFailure}})
+    function SampleGenoType(name::Sample, v::Vector{Union{Clade, MatchFailure}})
         if length(v) != N_SEGMENTS
             error("Must be $N_SEGMENTS long")
         end
@@ -53,8 +53,8 @@ struct SampleGenoType
     end
 end
 
-function flutypes(g::Union{GenoType, SampleGenoType})
-    ((Segment(i-1), f::FluType) for (i,f) in enumerate(g.v) if f isa FluType)
+function clades(g::Union{GenoType, SampleGenoType})
+    ((Segment(i-1), f::Clade) for (i,f) in enumerate(g.v) if f isa Clade)
 end
 
 function hits(g::SampleGenoType)
@@ -78,7 +78,7 @@ function is_match(sample::SampleGenoType, genotype::GenoType)
 end
 
 function missing_segments(sample::SampleGenoType, genotype::GenoType)
-    [Segment(i-1) for i in 1:N_SEGMENTS if sample.v[i] == NoSegment && genotype.v[i] isa FluType]
+    [Segment(i-1) for i in 1:N_SEGMENTS if sample.v[i] == NoSegment && genotype.v[i] isa Clade]
 end
 
 function main(
@@ -142,7 +142,7 @@ function load_sample_genotypes(
     # Initialize each segment with NoSegment
     sample_genotype_dict = Dict(
         sample => 
-        fill!(Vector{Union{MatchFailure, FluType}}(undef, N_SEGMENTS), NoSegment)
+        fill!(Vector{Union{MatchFailure, Clade}}(undef, N_SEGMENTS), NoSegment)
         for (sample, _) in consensus
     )
 
@@ -153,7 +153,7 @@ function load_sample_genotypes(
         end
     end
 
-    # Now read blast and set the matched segments to flutypes
+    # Now read blast and set the matched segments to clades
     for file in readdir(blast_dir, join=true)
         segment = parse(Segment, basename(first(splitext(file))))
         rows = open(Tools.parse_blast_io, file)
@@ -176,7 +176,7 @@ function split_flutype(s_::Union{String, SubString{String}})
     p === nothing && return bad_trailing(s)
     p == lastindex(s) && return bad_trailing(s)
     name = SubString(s, 1:prevind(s, p))
-    flutype = FluType(SubString(s, p+1:lastindex(s)))
+    flutype = Clade(SubString(s, p+1:lastindex(s)))
     return (name, flutype)
 end
 
@@ -199,9 +199,9 @@ function load_known_genotypes(path::AbstractString)::Vector{GenoType}
     segments = map(i -> parse(Segment, i), lines[1][2:end])
     result = GenoType[]
     for line in lines[2:end]
-        v = fill!(Vector{Union{Nothing, FluType}}(undef, N_SEGMENTS), nothing)
+        v = fill!(Vector{Union{Nothing, Clade}}(undef, N_SEGMENTS), nothing)
         for (segment, f) in zip(segments, line[2:end])
-            v[Integer(segment) + 1] = FluType(f)
+            v[Integer(segment) + 1] = Clade(f)
         end
         push!(result, GenoType(first(line), v))
     end
@@ -215,7 +215,7 @@ function write_genotypes(
     open(path, "w") do io
         println(io, "sample\tsegment\tflutype")
         for genotype in sample_genotypes
-            for (segment, flutype) in flutypes(genotype)
+            for (segment, flutype) in clades(genotype)
                 println(io, genotype.sample, '\t', segment, '\t', flutype)
             end
         end
@@ -278,7 +278,7 @@ function write_genotype_report(
             println(io, "Indeterminate genotypes:")
             for (g, gs) in indeterminate
                 println(io, '\t', g.sample)
-                for (seg, flutype) in flutypes(g)
+                for (seg, flutype) in clades(g)
                     println(io, "\t\t", seg, '\t', flutype)
                 end
                 println(io)
@@ -308,13 +308,13 @@ function write_fasta_combos(
     sample_genotypes::Vector{SampleGenoType}
 )
     genotype_of_sample = Dict(g.sample => g for g in sample_genotypes)
-    by_combo = Dict{Tuple{Segment, FluType}, Vector{FASTA.Record}}()
+    by_combo = Dict{Tuple{Segment, Clade}, Vector{FASTA.Record}}()
     for (sample, mseqs) in consensus
         sample_genotype = genotype_of_sample[sample]
-        for (segment, flutype) in flutypes(sample_genotype)
+        for (segment, flutype) in clades(sample_genotype)
             segment ∈ tree_segments || continue
             seq = @unwrap_or mseqs[Integer(segment) + 1] continue
-            record = FASTA.Record(name(sample), seq)
+            record = FASTA.Record(nameof(sample), seq)
             push!(get!(valtype(by_combo), by_combo, (segment, flutype)), record)
         end
     end

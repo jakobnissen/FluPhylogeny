@@ -5,6 +5,8 @@ using .Tools
 using FASTX: FASTA
 using InfluenzaCore: Segment
 
+const Seq = Tools.Seq
+
 function main(
     outdir::AbstractString,
     phylodir::AbstractString, # simply a dir with a list of segments
@@ -21,7 +23,7 @@ function main(
         in(segment, segments)
     end
 
-    # Split by segment andensure uniqueness of names within one segment
+    # Split by segment and ensure uniqueness of names within one segment
     bysegment = Dict(s => Seq[] for s in segments)
     names = Dict(s => Set{String}() for s in segments)
     for (_, segment, seq) in consensus
