@@ -1,7 +1,7 @@
 # Purpose:
-# Write "tmp/genotypes.tsv" with sample \t seqname \t flutype for all sequences
+# Write "tmp/genotypes.tsv" with sample \t seqname \t clade for all sequences
 # Create genotypes.txt report
-# Write tmp/cat/{segment}_{flutype}.fna for all present segment/flutype combos
+# Write tmp/cat/{segment}_{clade}.fna for all present segment/clade combos
 
 include("tools.jl")
 using .Tools
@@ -84,9 +84,9 @@ end
 function main(
     genotype_report_path::AbstractString, # output: genotypes.txt
     genotypes_out_path::AbstractString,  # output: tmp/genotypes.tsv
-    cattypes_dir::AbstractString, # output: dir to put {segment}_{flutype}.fna
+    cattypes_dir::AbstractString, # output: dir to put {segment}_{clade}.fna
     tree_segments_str::AbstractString, # comma-sep string of segments to
-        # write {segment}_{flutype}.fna for
+        # write {segment}_{clade}.fna for
     known_genotypes_path::AbstractString, # input: genotypes.tsv ref input
     cat_dir::AbstractString, # input: dir w. concatenated consensus seqs
     blast_dir::AbstractString # input: dir w. BLAST results
@@ -102,7 +102,7 @@ function main(
     # Output: genotypes.txt
     write_genotype_report(genotype_report_path, known_genotypes, sample_genotypes)
 
-    # Output: tmp/cat/{segment}_{flutype}.fna for segments in TREE_SEGMENTS
+    # Output: tmp/cat/{segment}_{clade}.fna for segments in TREE_SEGMENTS
     tree_segments = Set(map(i -> parse(Segment, i), split(tree_segments_str, ',')))
     
     write_fasta_combos(cattypes_dir, tree_segments, consensus, sample_genotypes)
@@ -161,23 +161,12 @@ function load_sample_genotypes(
         Tools.keep_best!(rows)
         for row in rows
             sample = Sample(row.qacc)
-            flutype = last(split_flutype(row.sacc))
-            sample_genotype_dict[sample][Integer(segment) + 1] = flutype
+            clade = last(split_clade(row.sacc))
+            sample_genotype_dict[sample][Integer(segment) + 1] = clade
         end
     end
     v = [SampleGenoType(k, v) for (k, v) in sample_genotype_dict]
     return sort!(v, by=i -> i.sample)
-end
-
-@noinline bad_trailing(s) = error("Cannot parse as NAME_FLUTYPE: \"" * s, '"')
-function split_flutype(s_::Union{String, SubString{String}})
-    s = strip(s_)
-    p = findlast(isequal(UInt8('_')), codeunits(s))
-    p === nothing && return bad_trailing(s)
-    p == lastindex(s) && return bad_trailing(s)
-    name = SubString(s, 1:prevind(s, p))
-    flutype = Clade(SubString(s, p+1:lastindex(s)))
-    return (name, flutype)
 end
 
 function filter_blast!(rows::Vector{<:NamedTuple})
@@ -213,10 +202,10 @@ function write_genotypes(
     sample_genotypes::Vector{SampleGenoType}
 )
     open(path, "w") do io
-        println(io, "sample\tsegment\tflutype")
+        println(io, "sample\tsegment\tclade")
         for genotype in sample_genotypes
-            for (segment, flutype) in clades(genotype)
-                println(io, genotype.sample, '\t', segment, '\t', flutype)
+            for (segment, clade) in clades(genotype)
+                println(io, genotype.sample, '\t', segment, '\t', clade)
             end
         end
     end
@@ -278,8 +267,8 @@ function write_genotype_report(
             println(io, "Indeterminate genotypes:")
             for (g, gs) in indeterminate
                 println(io, '\t', g.sample)
-                for (seg, flutype) in clades(g)
-                    println(io, "\t\t", seg, '\t', flutype)
+                for (seg, clade) in clades(g)
+                    println(io, "\t\t", seg, '\t', clade)
                 end
                 println(io)
                 for g_ in gs
@@ -311,15 +300,15 @@ function write_fasta_combos(
     by_combo = Dict{Tuple{Segment, Clade}, Vector{FASTA.Record}}()
     for (sample, mseqs) in consensus
         sample_genotype = genotype_of_sample[sample]
-        for (segment, flutype) in clades(sample_genotype)
+        for (segment, clade) in clades(sample_genotype)
             segment ∈ tree_segments || continue
             seq = @unwrap_or mseqs[Integer(segment) + 1] continue
             record = FASTA.Record(nameof(sample), seq)
-            push!(get!(valtype(by_combo), by_combo, (segment, flutype)), record)
+            push!(get!(valtype(by_combo), by_combo, (segment, clade)), record)
         end
     end
-    for ((segment, flutype), records) in by_combo
-        path = joinpath(cattypes_dir, "$(segment)_$(flutype).fna")
+    for ((segment, clade), records) in by_combo
+        path = joinpath(cattypes_dir, "$(segment)_$(clade).fna")
         open(FASTA.Writer, path) do writer
             foreach(rec -> write(writer, rec), records)
         end

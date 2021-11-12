@@ -55,13 +55,14 @@ with open(os.path.join(REFDIR, "tree_segments.csv")) as file:
     if set(TREE_SEGMENTS) - set(ALL_SEGMENTS):
         raise ValueError("Tree segments must be a subset of all segments")
 
-# Check the validity of "genotypes.tsv": No flutype which is not in ALL_SEGTYPES
+# Check the validity of "genotypes.tsv": No clade which is not in ALL_SEGTYPES
 with open(os.path.join(REFDIR, "genotypes.tsv")) as file:
     header = next(file).strip()
     if not header.startswith("genotype\t"):
         raise ValueError("Expected header in genotypes.tsv reference file")
+    headerfields = header.split("\t")
 
-    if set(header.split('\t')) - {"genotype"} != set(ALL_SEGMENTS):
+    if set(headerfields[1:]) - {"genotype"} != set(ALL_SEGMENTS):
         raise KeyError("Segments in genotypes.tsv do not match reference segments")
 
     for line in filter(None, map(str.strip, file)):
@@ -69,9 +70,9 @@ with open(os.path.join(REFDIR, "genotypes.tsv")) as file:
         if len(fields) != len(ALL_SEGMENTS) + 1:
             raise ValueError("Not all rows in genotypes.tsv has same length")
 
-        for (segment, flutype) in zip(ALL_SEGMENTS, fields):
-            if flutype not in ALL_SEGTYPES[segment]:
-                raise KeyError(f"Flutype {flutype} in segment {segment} in genotypes.tsv has no reference")
+        for (segment, clade) in zip(headerfields[1:], fields[1:]):
+            if clade not in ALL_SEGTYPES[segment]:
+                raise KeyError(f"Clade {clade}, segment {segment} in genotypes.tsv has no reference")
 
 ###########################
 # This is the function that triggers the checkpoint. By accessing the blastout
@@ -83,7 +84,7 @@ def all_inputs(wildcards):
     files = ["genotypes.txt", "tmp/genotypes.tsv"]
     
     combos = [p[:-4].partition('_') for p in os.listdir("tmp/cattypes")]
-    files.extend([f"trees/{s}/{f}.pdf" for (s,_,f) in combos])
+    #files.extend([f"trees/{s}/{f}.pdf" for (s,_,f) in combos])
 
     return files
 
@@ -148,18 +149,17 @@ rule blastn:
         basename=rules.cat_ref.output
     shell: "blastn -query {input.fna} -db {params.basename} -outfmt '6 qacc sacc qcovhsp pident bitscore' > {output}"
 
-
 # Purpose: Determine the subtype for each segment in ALL_SEGMENTS.
-# write the output to tmp/flutypes.txt
+# write the output to tmp/clades.txt
 # write human-readable report to genotypes.txt
 checkpoint genotypes:
     input:
         blast=expand("tmp/blast/{segment}.blastout", segment=ALL_SEGMENTS),
         cons=expand("tmp/catcons/{segment}.fna", segment=ALL_SEGMENTS)
     output:
-        flutypes="tmp/genotypes.tsv",
+        clades="tmp/genotypes.tsv",
         genotypes="genotypes.txt"
-        # Also tmp/cat/{segment}_{flutype}.fna for every seg/type found
+        # Also tmp/cat/{segment}_{clade}.fna for every seg/type found
         # but the pairs ar unknown at this point, so it's not part of the rule
     params:
         juliacmd=JULIA_COMMAND,
@@ -171,7 +171,7 @@ checkpoint genotypes:
         known_genotypes=os.path.join(REFDIR, "genotypes.tsv")
     shell:
         "{params.juliacmd} {params.scriptpath:q} "
-        "{output.genotypes} {output.flutypes} {params.outconsdir} "
+        "{output.genotypes} {output.clades} {params.outconsdir} "
         "{params.tree_segments} {params.known_genotypes:q} {params.catconsdir} "
         "{params.blastdir}"
 
@@ -180,57 +180,57 @@ checkpoint genotypes:
 ##################
 
 rule aln_ref:
-    input: REFDIR + "/segments/{segment}/{flutype}.fna"
-    output: "tmp/refaln/{segment}_{flutype}.aln.fna"
-    log: "tmp/log/refaln/{segment}_{flutype}.aln.log"
+    input: REFDIR + "/segments/{segment}/{clade}.fna"
+    output: "tmp/refaln/{segment}_{clade}.aln.fna"
+    log: "tmp/log/refaln/{segment}_{clade}.aln.log"
     shell: "mafft {input:q} > {output} 2> {log}"
 
 rule trim_ref:
     input: rules.aln_ref.output
-    output: REFOUTDIR + "/segments/{segment}_{flutype}.aln.trim.fna"
-    log: "tmp/log/refaln/{segment}_{flutype}.trim.log"
+    output: REFOUTDIR + "/segments/{segment}_{clade}.aln.trim.fna"
+    log: "tmp/log/refaln/{segment}_{clade}.trim.log"
     shell: "trimal -in {input} -out {output:q} -gt 0.9 -cons 60 2> {log}"
 
 rule guide_tree:
     input: rules.trim_ref.output
-    output: "tmp/guide/{segment}_{flutype}.treefile"
-    log: "tmp/log/guide/{segment}_{flutype}.log"
+    output: "tmp/guide/{segment}_{clade}.treefile"
+    log: "tmp/log/guide/{segment}_{clade}.log"
     threads: 2
-    params: "tmp/guide/{segment}_{flutype}"
+    params: "tmp/guide/{segment}_{clade}"
     shell: "iqtree -s {input:q} -pre {params} -T {threads} -m HKY+G2 --redo > {log}"
 
 rule move_guide_tree:
     input: rules.guide_tree.output
-    output: REFOUTDIR + "/{segment}_{flutype}.treefile"
+    output: REFOUTDIR + "/{segment}_{clade}.treefile"
     shell: "cp {input} {output:q}"
 
 rule align_to_ref:
     input:
         ref=rules.trim_ref.output,
-        con="tmp/cattypes/{segment}_{flutype}.fna"
-    output: "tmp/merge/{segment}_{flutype}.aln.fna"
-    log: "tmp/log/merge/{segment}_{flutype}.log"
+        con="tmp/cattypes/{segment}_{clade}.fna"
+    output: "tmp/merge/{segment}_{clade}.aln.fna"
+    log: "tmp/log/merge/{segment}_{clade}.log"
     shell: "mafft --add {input.con} --keeplength {input.ref:q} > {output} 2> {log}"
 
 rule iqtree:
     input:
         aln=rules.align_to_ref.output,
         guide=rules.move_guide_tree.output
-    output: "tmp/iqtree/{segment}_{flutype}.treefile"
-    log: "tmp/log/iqtree/{segment}_{flutype}.log"
+    output: "tmp/iqtree/{segment}_{clade}.treefile"
+    log: "tmp/log/iqtree/{segment}_{clade}.log"
     threads: 2
-    params: "tmp/iqtree/{segment}_{flutype}"
+    params: "tmp/iqtree/{segment}_{clade}"
     shell:
         "iqtree -s {input.aln} -pre {params} "
         "-g {input.guide:q} -T {threads} -m HKY+G2 --redo > {log}"
 
 rule move_iqtree:
     input: rules.iqtree.output
-    output: "trees/{segment}/{flutype}.treefile"
+    output: "trees/{segment}/{clade}.treefile"
     shell: "cp {input} {output}"
 
 rule plot_tree:
     input: rules.move_iqtree.output
-    output: "trees/{segment}/{flutype}.pdf"
-    params: "tmp/cattypes/{segment}_{flutype}.fna"
+    output: "trees/{segment}/{clade}.pdf"
+    params: "tmp/cattypes/{segment}_{clade}.fna"
     script: SNAKEDIR + "/scripts/plottree.py"
