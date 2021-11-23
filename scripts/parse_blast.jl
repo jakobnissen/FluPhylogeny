@@ -3,15 +3,20 @@
 # Create genotypes.txt report
 # Write tmp/cat/{segment}_{clade}.fna for all present segment/clade combos
 
-include("tools.jl")
-using .Tools
 using Influenza
 using FASTX: FASTA
 using ErrorTypes: Option, none, some, is_error, @unwrap_or
 using BioSequences: LongDNASeq
+using BlastParse: BlastParse
 
 const N_SEGMENTS = length(instances(Segment))
 const SegmentTuple{T} = NTuple{N_SEGMENTS, T}
+
+parse_blast_io(::IO) = nothing # to please linter
+eval(BlastParse.gen_blastparse_code(
+    (:qacc, :sacc, :qcovhsp, :pident, :bitscore),
+    :parse_blast_io
+))
 
 ifilter(f) = x -> Iterators.filter(f, x)
 imap(f) = x -> Iterators.map(f, x)
@@ -156,9 +161,9 @@ function load_sample_genotypes(
     # Now read blast and set the matched segments to clades
     for file in readdir(blast_dir, join=true)
         segment = parse(Segment, basename(first(splitext(file))))
-        rows = open(Tools.parse_blast_io, file)
+        rows = open(parse_blast_io, file)
         filter_blast!(rows)
-        Tools.keep_best!(rows)
+        keep_best!(rows)
         for row in rows
             sample = Sample(row.qacc)
             clade = last(split_clade(row.sacc))
@@ -167,6 +172,22 @@ function load_sample_genotypes(
     end
     v = [SampleGenoType(k, v) for (k, v) in sample_genotype_dict]
     return sort!(v, by=i -> i.sample)
+end
+
+function keep_best!(v::Vector{<:NamedTuple})
+    isempty(v) && return v
+    sort!(v, by=i -> (i.qacc, i.bitscore), rev=true)
+    query = first(v).qacc
+    len = 1
+    for i in 2:lastindex(v)
+        blastrow = v[i]
+        if blastrow.qacc != query
+            len += 1
+            v[len] = blastrow
+            query = blastrow.qacc
+        end
+    end
+    resize!(v, len)
 end
 
 function filter_blast!(rows::Vector{<:NamedTuple})

@@ -1,11 +1,23 @@
 # usage: julia gather_consensus.jl refdir tmp/cat consensus_dir
 
-include("tools.jl")
-using .Tools
 using FASTX: FASTA
-using InfluenzaCore: Segment
+using BioSequences: LongDNASeq
+using Influenza: Segment, Sample, load_references, split_segment
 
-const Seq = Tools.Seq
+"Represents a DNA sequence"
+struct Seq
+    name::String
+    seq::LongDNASeq
+end
+
+function Seq(record::FASTA.Record)
+    seq = FASTA.sequence(LongDNASeq, record)
+    name = let
+        h = FASTA.header(record)
+        h === nothing ? error("Empty header in FASTA record") : h
+    end
+    Seq(name, seq)
+end
 
 function main(
     outdir::AbstractString,
@@ -16,7 +28,7 @@ function main(
         parse(Segment, entry)
     end
 
-    consensus = Tools.load_consensus(consdir)
+    consensus = load_consensus(consdir)
 
     # Remove consensus of irrelevant segments
     filter!(consensus) do (_, segment, _)
@@ -35,6 +47,32 @@ function main(
     end
 
     dump_consensus(outdir, bysegment)
+end
+
+function load_consensus(
+    dir::AbstractString
+)::Vector{Tuple{Sample, Segment, Seq}}
+    result = Vector{Tuple{Sample, Segment, Seq}}()
+    record = FASTA.Record()
+    for _sample in readdir(dir)
+        sample = Sample(_sample)
+        path = joinpath(dir, _sample, "primary.fna")
+        isfile(path) && 
+        open(FASTA.Reader, path) do reader
+            while !eof(reader)
+                read!(reader, record)
+                header = let
+                    h = FASTA.header(record)
+                    h === nothing ? error("Record in $path has no header") : h
+                end
+                (name, segment) = split_segment(header)
+                dnaseq = FASTA.sequence(LongDNASeq, record)
+                seq = Seq(name, dnaseq)
+                push!(result, (sample, segment, seq))
+            end
+        end
+    end
+    return result
 end
 
 function dump_consensus(

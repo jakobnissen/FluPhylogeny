@@ -31,6 +31,8 @@ possible_hosts = set(os.listdir(os.path.join(TOP_REF_DIR, "phylo")))
 if HOST not in possible_hosts:
     raise KeyError(f"Directory for host {HOST} not found in {os.path.join(TOP_REF_DIR, 'phylo')}")
 
+#MINIMUM_IDENTITY = 0.97 if host == 'human' else 0.85
+
 REFDIR = os.path.join(TOP_REF_DIR, "phylo", HOST)
 REFOUTDIR = os.path.join(TOP_REFOUT_DIR, "phylo", HOST)
 
