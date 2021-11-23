@@ -24,8 +24,8 @@ imap(f) = x -> Iterators.map(f, x)
 @enum MatchFailure::UInt8 NoSegment NoMatch
 
 function Base.print(io::IO, m::MatchFailure)
-    m === NoSegment ? println(io, "No segment") :
-    m === NoMatch ? println(io, "No match") :
+    m === NoSegment ? print(io, "No segment") :
+    m === NoMatch ? print(io, "No match") :
     error()
 end
 
@@ -94,11 +94,12 @@ function main(
         # write {segment}_{clade}.fna for
     known_genotypes_path::AbstractString, # input: genotypes.tsv ref input
     cat_dir::AbstractString, # input: dir w. concatenated consensus seqs
-    blast_dir::AbstractString # input: dir w. BLAST results
+    blast_dir::AbstractString, # input: dir w. BLAST results
+    minid::AbstractFloat
 )
     isdir(cattypes_dir) || mkpath(cattypes_dir)
     consensus = load_consensus(cat_dir)
-    sample_genotypes = load_sample_genotypes(blast_dir, consensus)
+    sample_genotypes = load_sample_genotypes(blast_dir, consensus, minid)
     known_genotypes = load_known_genotypes(known_genotypes_path)
 
     # Output: tmp/genotypes.tsv
@@ -141,7 +142,8 @@ end
 
 function load_sample_genotypes(
     blast_dir::AbstractString,
-    consensus::Vector{Tuple{Sample, SegmentTuple{Option{LongDNASeq}}}}
+    consensus::Vector{Tuple{Sample, SegmentTuple{Option{LongDNASeq}}}},
+    minid::AbstractFloat,
 )::Vector{SampleGenoType}
     
     # Initialize each segment with NoSegment
@@ -162,7 +164,7 @@ function load_sample_genotypes(
     for file in readdir(blast_dir, join=true)
         segment = parse(Segment, basename(first(splitext(file))))
         rows = open(parse_blast_io, file)
-        filter_blast!(rows)
+        filter_blast!(rows, minid)
         keep_best!(rows)
         for row in rows
             sample = Sample(row.qacc)
@@ -190,11 +192,11 @@ function keep_best!(v::Vector{<:NamedTuple})
     resize!(v, len)
 end
 
-function filter_blast!(rows::Vector{<:NamedTuple})
+function filter_blast!(rows::Vector{<:NamedTuple}, minid::AbstractFloat)
     # For now, just some haphazardly chosen filters: Minimum 80% identity
     # over at least 80% of the query
     filter!(rows) do row
-        row.pident ≥ 0.8 &&
+        row.pident ≥ minid &&
         row.qcovhsp ≥ 0.8
     end
 end
@@ -338,14 +340,18 @@ function write_fasta_combos(
 end 
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    if length(ARGS) != 7
+    if length(ARGS) != 8
         println(
             "Usage: julia parse_blast.jl genotype_report_path " * 
             "genotype_out_path cattypes_dir tree_segments_str " *
-            " known_genotypes_path cat_dir blast_dir"
+            " known_genotypes_path cat_dir blast_dir min_id"
         )
         exit(1)
     else
-        main(ARGS...)
+        minid = parse(Float64, ARGS[8])
+        if minid < 0 || minid > 1.0
+            error("Minimum ID must be in 0..1")
+        end
+        main(ARGS[1:7]..., minid)
     end
 end

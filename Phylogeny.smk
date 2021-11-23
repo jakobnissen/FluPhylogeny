@@ -31,7 +31,7 @@ possible_hosts = set(os.listdir(os.path.join(TOP_REF_DIR, "phylo")))
 if HOST not in possible_hosts:
     raise KeyError(f"Directory for host {HOST} not found in {os.path.join(TOP_REF_DIR, 'phylo')}")
 
-#MINIMUM_IDENTITY = 0.97 if host == 'human' else 0.85
+MINIMUM_IDENTITY = 0.97 if HOST == 'human' else 0.8
 
 REFDIR = os.path.join(TOP_REF_DIR, "phylo", HOST)
 REFOUTDIR = os.path.join(TOP_REFOUT_DIR, "phylo", HOST)
@@ -170,12 +170,13 @@ checkpoint genotypes:
         outconsdir="tmp/cattypes", # dir of output .fna files
         blastdir="tmp/blast", # corresponds to input.blast
         tree_segments=",".join(TREE_SEGMENTS),
-        known_genotypes=os.path.join(REFDIR, "genotypes.tsv")
+        known_genotypes=os.path.join(REFDIR, "genotypes.tsv"),
+        minid=MINIMUM_IDENTITY
     shell:
         "{params.juliacmd} {params.scriptpath:q} "
         "{output.genotypes} {output.clades} {params.outconsdir} "
         "{params.tree_segments} {params.known_genotypes:q} {params.catconsdir} "
-        "{params.blastdir}"
+        "{params.blastdir} {params.minid}"
 
 ##################
 # After checkpoint
