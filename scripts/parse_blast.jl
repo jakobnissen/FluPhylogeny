@@ -7,6 +7,7 @@ using Influenza
 using FASTX: FASTA
 using ErrorTypes: Option, none, some, is_error, @unwrap_or
 using BioSequences: LongDNASeq
+using Printf: @sprintf
 using BlastParse: BlastParse
 
 const N_SEGMENTS = length(instances(Segment))
@@ -20,14 +21,6 @@ eval(BlastParse.gen_blastparse_code(
 
 ifilter(f) = x -> Iterators.filter(f, x)
 imap(f) = x -> Iterators.map(f, x)
-
-@enum MatchFailure::UInt8 NoSegment NoMatch
-
-function Base.print(io::IO, m::MatchFailure)
-    m === NoSegment ? print(io, "No segment") :
-    m === NoMatch ? print(io, "No match") :
-    error()
-end
 
 # Random optimization thought:
 # If this ever bottlenecks, then enumerate all clades for each segment in 5 bits
@@ -46,11 +39,31 @@ struct GenoType
     end
 end
 
+@enum MatchFailure::UInt8 NoSegment NoMatch
+
+function Base.print(io::IO, m::MatchFailure)
+    m === NoSegment ? print(io, "No segment") :
+    m === NoMatch ? print(io, "No match") :
+    error()
+end
+
+struct Match
+    clade::Clade
+    identifier::String
+    identity::Float64
+
+    function Match(clade::Clade, identifier::AbstractString, identity::Number)
+        id = convert(Float64, identity)
+        (id ≤ 1.0 && id ≥ 0.0) || error("Identity must be in unit range")
+        new(clade, convert(String, identifier), id)
+    end
+end
+
 struct SampleGenoType
     sample::Sample
-    v::Vector{Union{Clade, MatchFailure}}
+    v::Vector{Union{Match, MatchFailure}}
 
-    function SampleGenoType(name::Sample, v::Vector{Union{Clade, MatchFailure}})
+    function SampleGenoType(name::Sample, v::Vector{Union{Match, MatchFailure}})
         if length(v) != N_SEGMENTS
             error("Must be $N_SEGMENTS long")
         end
@@ -58,8 +71,16 @@ struct SampleGenoType
     end
 end
 
-function clades(g::Union{GenoType, SampleGenoType})
+function clades(g::GenoType)
     ((Segment(i-1), f::Clade) for (i,f) in enumerate(g.v) if f isa Clade)
+end
+
+function clades(g::SampleGenoType)
+    ((Segment(i-1), f.clade::Clade) for (i,f) in enumerate(g.v) if f isa Match)
+end
+
+function matches(g::SampleGenoType)
+    ((Segment(i-1), f) for (i,f) in enumerate(g.v) if f isa Match)
 end
 
 function hits(g::SampleGenoType)
@@ -70,7 +91,7 @@ end
 function is_compatible(sample::SampleGenoType, genotype::GenoType)
     all(1:N_SEGMENTS) do i
         s, g = sample.v[i], genotype.v[i]
-        s == NoSegment || isnothing(g) || s == g
+        s == NoSegment || isnothing(g) || (s isa Match && s.clade == g)
     end
 end
 
@@ -78,7 +99,7 @@ end
 function is_match(sample::SampleGenoType, genotype::GenoType)
     all(1:N_SEGMENTS) do i
         s, g = sample.v[i], genotype.v[i]
-        isnothing(g) || s == g
+        isnothing(g) || (s isa Match && s.clade == g)
     end
 end
 
@@ -149,7 +170,7 @@ function load_sample_genotypes(
     # Initialize each segment with NoSegment
     sample_genotype_dict = Dict(
         sample => 
-        fill!(Vector{Union{MatchFailure, Clade}}(undef, N_SEGMENTS), NoSegment)
+        fill!(Vector{Union{MatchFailure, Match}}(undef, N_SEGMENTS), NoSegment)
         for (sample, _) in consensus
     )
 
@@ -169,7 +190,10 @@ function load_sample_genotypes(
         for row in rows
             sample = Sample(row.qacc)
             clade = last(split_clade(row.sacc))
-            sample_genotype_dict[sample][Integer(segment) + 1] = clade
+            id = row.pident
+            identifier = first(Influenza.split_clade(row.sacc))
+            match = Match(clade, identifier, id)
+            sample_genotype_dict[sample][Integer(segment) + 1] = match
         end
     end
     v = [SampleGenoType(k, v) for (k, v) in sample_genotype_dict]
@@ -290,8 +314,9 @@ function write_genotype_report(
             println(io, "Indeterminate genotypes:")
             for (g, gs) in indeterminate
                 println(io, '\t', g.sample)
-                for (seg, clade) in clades(g)
-                    println(io, "\t\t", seg, '\t', clade)
+                for (seg, match) in matches(g)
+                    sid = @sprintf "%.2f %%" (100 * match.identity)
+                    println(io, "\t\t", join([seg, match.clade, match.identifier, sid], '\t'))
                 end
                 println(io)
                 for g_ in gs
@@ -305,8 +330,14 @@ function write_genotype_report(
             for g in new
                 println(io, '\t', g.sample)
                 for (seg, hit) in hits(g)
-                    println(io, "\t\t", seg, '\t', hit)
+                    if hit == NoMatch
+                        println(io, "\t\t", seg, '\t', hit)
+                    else
+                        sid = @sprintf "%.2f %%" (100 * hit.identity)
+                        println(io, "\t\t", join([seg, hit.clade, hit.identifier, sid], '\t'))
+                    end
                 end
+                println(io)
             end
         end
     end
