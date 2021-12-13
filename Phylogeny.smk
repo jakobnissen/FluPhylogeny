@@ -53,7 +53,10 @@ for segment in ALL_SEGMENTS:
 
 # Get tree segments
 with open(os.path.join(REFDIR, "tree_segments.csv")) as file:
-    TREE_SEGMENTS = next(file).strip().split(",")
+    try:
+        TREE_SEGMENTS = next(file).strip().split(",")
+    except StopIteration:
+        TREE_SEGMENTS = []
     if set(TREE_SEGMENTS) - set(ALL_SEGMENTS):
         raise ValueError("Tree segments must be a subset of all segments")
 
@@ -86,7 +89,8 @@ def all_inputs(wildcards):
     files = ["genotypes.txt", "tmp/genotypes.tsv"]
     
     combos = [p[:-4].partition('_') for p in os.listdir("tmp/cattypes")]
-    #files.extend([f"trees/{s}/{f}.pdf" for (s,_,f) in combos])
+    if HOST == 'human':
+        files.extend([f"trees/{s}/{f}.pdf" for (s,_,f) in combos])
 
     return files
 
