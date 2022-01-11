@@ -322,6 +322,7 @@ function write_genotype_report(
                 for g_ in gs
                     println(io, "\t\tMatches ", g_.name)
                 end
+                println(io)
             end
             println(io)
         end

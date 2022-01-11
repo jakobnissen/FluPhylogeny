@@ -31,7 +31,7 @@ possible_hosts = set(os.listdir(os.path.join(TOP_REF_DIR, "phylo")))
 if HOST not in possible_hosts:
     raise KeyError(f"Directory for host {HOST} not found in {os.path.join(TOP_REF_DIR, 'phylo')}")
 
-MINIMUM_IDENTITY = 0.97 if HOST == 'human' else 0.8
+MINIMUM_IDENTITY = 0.96 if HOST == 'human' else 0.8
 
 REFDIR = os.path.join(TOP_REF_DIR, "phylo", HOST)
 REFOUTDIR = os.path.join(TOP_REFOUT_DIR, "phylo", HOST)
@@ -96,9 +96,11 @@ def all_inputs(wildcards):
 
 rule all:
     input: all_inputs
-    output: "commit_phylogeny.txt"
+    output: "phylogeny_versions.txt"
     params: SNAKEDIR
-    shell: "git -C {params:q} rev-parse --short HEAD > {output}"
+    shell:
+        "git -C {params:q} rev-parse --short HEAD > {output} && "
+        "julia -v >> {output}"
 
 ###########################
 # Before checkpoint: BLASTn
