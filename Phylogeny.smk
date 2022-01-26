@@ -99,6 +99,7 @@ rule all:
     output: "phylogeny_versions.txt"
     params: SNAKEDIR
     shell:
+        "cp {params:q}/copy_readme.md README_PHYLOGENY.md && "
         "git -C {params:q} rev-parse --short HEAD > {output} && "
         "julia -v >> {output}"
 
