@@ -27,14 +27,14 @@ if "host" not in config:
 HOST = config["host"]
 
 # Check refdir has a host subdir
-possible_hosts = set(os.listdir(os.path.join(TOP_REF_DIR, "phylo")))
+possible_hosts = set(os.listdir(TOP_REF_DIR))
 if HOST not in possible_hosts:
-    raise KeyError(f"Directory for host {HOST} not found in {os.path.join(TOP_REF_DIR, 'phylo')}")
+    raise KeyError(f"Directory for host {HOST} not found in {TOP_REF_DIR}")
 
 MINIMUM_IDENTITY = 0.96 if HOST == 'human' else 0.8
 
-REFDIR = os.path.join(TOP_REF_DIR, "phylo", HOST)
-REFOUTDIR = os.path.join(TOP_REFOUT_DIR, "phylo", HOST)
+REFDIR = os.path.join(TOP_REF_DIR, HOST)
+REFOUTDIR = os.path.join(TOP_REFOUT_DIR, HOST)
 
 # Get consensus dir
 if "consensus" not in config:
@@ -135,7 +135,8 @@ rule makeblastdb:
         nin=REFOUTDIR + "/{segment}.fna" + ".nin",
         nhr=REFOUTDIR + "/{segment}.fna" + ".nhr",
         nsq=REFOUTDIR + "/{segment}.fna" + ".nsq"
-    shell: "makeblastdb -in {input:q} -dbtype nucl"
+    log: "tmp/log/makeblastdb/{segment}.log"
+    shell: "makeblastdb -in {input:q} -dbtype nucl 2> {log}"
 
 rule gather_cons:
     input: TOP_REFOUT_DIR +  "/phylo_instantiated"
