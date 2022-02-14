@@ -109,6 +109,8 @@ end
 
 function main(
     genotype_report_path::AbstractString, # output: genotypes.txt
+    simple_genotype_path::Union{Nothing, AbstractString},
+    # output: Simplified version of genotypes.txt with only HA and NA, if present.
     genotypes_out_path::AbstractString,  # output: tmp/genotypes.tsv
     cattypes_dir::AbstractString, # output: dir to put {segment}_{clade}.fna
     tree_segments_str::AbstractString, # comma-sep string of segments to
@@ -124,7 +126,7 @@ function main(
     known_genotypes = load_known_genotypes(known_genotypes_path)
 
     # Output: tmp/genotypes.tsv
-    write_genotypes(genotypes_out_path, sample_genotypes)
+    write_genotypes(genotypes_out_path, simple_genotype_path, sample_genotypes)
 
     # Output: genotypes.txt
     write_genotype_report(genotype_report_path, known_genotypes, sample_genotypes)
@@ -235,7 +237,7 @@ function load_known_genotypes(path::AbstractString)::Vector{GenoType}
     segments = map(i -> parse(Segment, i), lines[1][2:end])
     result = GenoType[]
     for line in lines[2:end]
-        v = fill!(Vector{Union{Nothing, Clade}}(undef, N_SEGMENTS), nothing)
+        v = Vector{Union{Nothing, Clade}}(nothing, N_SEGMENTS)
         for (segment, f) in zip(segments, line[2:end])
             v[Integer(segment) + 1] = Clade(f)
         end
@@ -246,6 +248,7 @@ end
 
 function write_genotypes(
     path::AbstractString,
+    simple_genotype_path::Union{Nothing, AbstractString},
     sample_genotypes::Vector{SampleGenoType}
 )
     open(path, "w") do io
@@ -253,6 +256,23 @@ function write_genotypes(
         for genotype in sample_genotypes
             for (segment, clade) in clades(genotype)
                 println(io, genotype.sample, '\t', segment, '\t', clade)
+            end
+        end
+    end
+    if simple_genotype_path !== nothing
+        open(simple_genotype_path, "w") do io
+            println(io, "sample\tgenotype")
+            for genotype in sample_genotypes
+                d = Dict(clades(genotype))
+                print(io, genotype.sample, '\t')
+                ha = get(d, Segments.HA, nothing)
+                na = get(d, Segments.NA, nothing)
+                str = if ha === nothing || na === nothing
+                    "Unknown"
+                else
+                    ha * na
+                end
+                println(io, str)
             end
         end
     end
@@ -372,18 +392,19 @@ function write_fasta_combos(
 end 
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    if length(ARGS) != 8
+    if length(ARGS) != 9
         println(
             "Usage: julia parse_blast.jl genotype_report_path " * 
-            "genotype_out_path cattypes_dir tree_segments_str " *
+            "genotype_out_path simple_genotype_path cattypes_dir tree_segments_str " *
             " known_genotypes_path cat_dir blast_dir min_id"
         )
         exit(1)
     else
-        minid = parse(Float64, ARGS[8])
+        minid = parse(Float64, ARGS[9])
         if minid < 0 || minid > 1.0
             error("Minimum ID must be in 0..1")
         end
-        main(ARGS[1:7]..., minid)
+        simple_genotype_path = strip(ARGS[3]) == "nothing" ? nothing : ARGS[3]
+        main(ARGS[1:2]..., simple_genotype_path, ARGS[4:8]..., minid)
     end
 end

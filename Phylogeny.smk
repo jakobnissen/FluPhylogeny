@@ -174,6 +174,7 @@ checkpoint genotypes:
     params:
         juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/parse_blast.jl",
+        simple_genotypes=lambda wc: "simple.txt" if HOST == "swine" else "nothing",
         catconsdir="tmp/catcons", # corresponds to input.cons
         outconsdir="tmp/cattypes", # dir of output .fna files
         blastdir="tmp/blast", # corresponds to input.blast
@@ -182,7 +183,7 @@ checkpoint genotypes:
         minid=MINIMUM_IDENTITY
     shell:
         "{params.juliacmd} {params.scriptpath:q} "
-        "{output.genotypes} {output.clades} {params.outconsdir} "
+        "{output.genotypes} {params.simple_genotypes} {output.clades} {params.outconsdir} "
         "{params.tree_segments} {params.known_genotypes:q} {params.catconsdir} "
         "{params.blastdir} {params.minid}"
 
