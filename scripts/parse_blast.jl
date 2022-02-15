@@ -187,6 +187,13 @@ function load_sample_genotypes(
     for file in readdir(blast_dir, join=true)
         segment = parse(Segment, basename(first(splitext(file))))
         rows = open(parse_blast_io, file)
+        bysample = Dict{Sample, typeof(rows)}()
+        for row in rows
+            push!(valtype(bysample), bysample, Sample(row.qacc), row)
+        end
+        
+
+
         filter_blast!(rows, minid)
         keep_best!(rows)
         for row in rows
@@ -200,6 +207,34 @@ function load_sample_genotypes(
     end
     v = [SampleGenoType(k, v) for (k, v) in sample_genotype_dict]
     return sort!(v, by=i -> i.sample)
+end
+
+# Pass in a vector that only contains one query
+function assign_clade(
+    v::Vector{<:NamedTuple},
+    min_id::AbstractFloat
+)::Union{Match, MatchFailure}
+    # If the match covers less than 80% of the query, it doesn't matter
+    filter!(i -> i.qcovhsp ≥ 0.8, v)
+
+    # It's a match if: Hit above minimum identity
+    # and second hit is 3%-points and 50% further away 
+    sort!(v, by=i -> i.bitscore, rev=true)
+    best = first(v)
+    best.pident < min_id && return NoMatch
+    identifier, clade = last(split_clade(best.sacc))
+    match = Match(clade, identifier, best.pident)
+    best_template = best.sacc
+    next_template_pos = findfirst(val -> val.sacc != best_template, v)
+    next_template_pos === nothing && return match
+    second_id = v[next_template_pos].pident
+    return if (second_id + 0.03 > best.pident ||
+        (1 - second_id) < 1.5 * (1 - best.pident)
+    )
+        NoMatch
+    else
+        match
+    end
 end
 
 function keep_best!(v::Vector{<:NamedTuple})
