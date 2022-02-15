@@ -270,7 +270,7 @@ function write_genotypes(
                 str = if ha === nothing || na === nothing
                     "Unknown"
                 else
-                    ha * na
+                    string(ha) * string(na)
                 end
                 println(io, str)
             end
