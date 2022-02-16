@@ -74,28 +74,10 @@ end
 
 Base.isempty(s::SampleGenoType) = all(isnothing, s.v)
 
-# This means: Does the sample genotype have multiple copies of the same
-# segment that do not map to the same clade
-function has_divergent_segments(s::SampleGenoType)
+function has_nohits_segment(s::SampleGenoType)
     any(s.v) do i
-        # If a segment is missing, it is not divergent
         i === nothing && return false
-        # If it's in only one copy, it's not divergent
-        length(i) == 1 && return false
-        clade = nothing
-        any(i) do maybe_match
-            # If there are multiple segments and one is not a match,
-            # it's divergent
-            maybe_match isa Match || return true
-            if isnothing(clade)
-                clade = match.clade
-                false
-            else
-                # Alternatively, if it's a match but to a different
-                # clade, it's divergent
-                match.clade !== clade
-            end
-        end
+        any(isequal(NoHits), values(i))
     end
 end
 
@@ -105,17 +87,40 @@ struct SampleSeqs
     seqs::SegmentTuple{Union{Nothing, Vector{Tuple{UInt8, LongDNASeq}}}}
 end
 
-# Could the sample possibly be an instance of the genotype?
-function is_compatible(sample::SampleGenoType, genotype::GenoType)::Bool
-    all(1:N_SEGMENTS) do i
+@enum GenotypeMatch::UInt8 NotMatching CouldMatch UniqueMatch
+function compatibility(sample::SampleGenoType, genotype::GenoType)::GenotypeMatch
+    # If all segments are a Match to the right segtype, it's a unique match
+    unique_match = true
+    for i in 1:N_SEGMENTS
         s, g = sample.v[i], genotype.v[i]
-        isnothing(g) || # specified segment is not considered in genotype
-        isnothing(s) || # segment is missing from sample
-        all(s) do (order, maybe_match)
-            maybe_match isa Match &&
-            maybe_match.clade == g
+        # Ignore segment if not considered by the Genotype
+        isnothing(g) && continue
+
+        # If missing from sample, it can't be a unique match, but could still match
+        if isnothing(s)
+            unique_match = false
+            continue
+        else
+            # If any matches hit or any match is ambiguous, it could match.
+            any_could = false
+            for (_, maybe_match) in s
+                if maybe_match isa Match
+                    if maybe_match.clade == g
+                        any_could = true
+                    else
+                        unique_match = false
+                    end
+                elseif maybe_match == NoHits
+                    unique_match = false
+                elseif maybe_match == AmbiguousHits
+                    unique_match = false
+                    any_could = true
+                end
+            end
+            any_could || return NotMatching
         end
     end
+    return unique_match ? UniqueMatch : CouldMatch
 end
 
 function main(
@@ -265,56 +270,6 @@ function load_known_genotypes(path::AbstractString)::Vector{GenoType}
     return sort!(result, by=i -> i.name)
 end
 
-# The simple report is to make it easier for people to decide what to answer
-# when a sample has been sent to NGS. Here, we just look at HA and NA
-#=
-function write_simple_report(
-    path::AbstractString,
-    sample_genotypes::Vector{SampleGenoType}
-)
-    open(path, "w") do io
-        for genotype in sample_genotypes, (i, segment_result) in enumerate(genotype.v)
-            segment = Segment(i - 1)
-            # Status OK if 1 HA and NA clade
-
-            # 
-
-    end
-end
-
-function write_genotypes(
-    path::AbstractString,
-    simple_genotype_path::Union{Nothing, AbstractString},
-    sample_genotypes::Vector{SampleGenoType}
-)
-    open(path, "w") do io
-        println(io, "sample\tsegment\tclade")
-        for genotype in sample_genotypes
-            for (segment, clade) in clades(genotype)
-                println(io, genotype.sample, '\t', segment, '\t', clade)
-            end
-        end
-    end
-    if simple_genotype_path !== nothing
-        open(simple_genotype_path, "w") do io
-            println(io, "sample\tgenotype")
-            for genotype in sample_genotypes
-                d = Dict(clades(genotype))
-                print(io, genotype.sample, '\t')
-                ha = get(d, Segments.HA, nothing)
-                na = get(d, Segments.NA, nothing)
-                str = if ha === nothing || na === nothing
-                    "Unknown"
-                else
-                    string(ha) * string(na)
-                end
-                println(io, str)
-            end
-        end
-    end
-end
-=#
-
 # Categorize samples into empty, known genotypes, indetermine, and new
 function categorize_genotypes(
     sample_genotypes::Vector{SampleGenoType},
@@ -323,29 +278,71 @@ function categorize_genotypes(
     res_empty = SampleGenoType[]
     res_known = Tuple{SampleGenoType, GenoType}[]
     # unknown includes superinfection that cannot be nailed down to one genotype
+    # it's nothing if due to superinfection, else contains possible genotypes
     res_unknown = Tuple{SampleGenoType, Vector{GenoType}}[]
     res_new = SampleGenoType[]
 
-    possible_genotypes = GenoType[]
+    compatible_genotypes = GenoType[]
+    matching_genotypes = GenoType[]
     for sample_genotype in sample_genotypes
+        # Empty: No segments
         if isempty(sample_genotype)
             push!(res_empty, sample_genotype)
             continue
         end
 
-        empty!(possible_genotypes)
-        for genotype in known_genotypes
-            is_compatible(sample_genotype, genotype) && push!(possible_genotypes, genotype)
+        # If any segment has no hits, it's a new genotype
+        if has_nohits_segment(sample_genotype)
+            push!(res_new, sample_genotype)
+            continue
         end
 
-        divergent = has_divergent_segments(sample_genotype)
-        if length(possible_genotypes) == 1
-            push!(res_known, (sample_genotype, only(possible_genotypes)))
-        elseif length(possible_genotypes) == 0 && !divergent
-            push!(res_new, sample_genotype)
-        else
-            push!(res_unknown, (sample_genotype, copy(possible_genotypes)))
+        # Else, we check compatibility
+        empty!(compatible_genotypes)
+        empty!(matching_genotypes)
+
+        for genotype in known_genotypes
+            match = compatibility(sample_genotype, genotype)
+            if match == CouldMatch
+                push!(compatible_genotypes, genotype)
+            elseif match == UniqueMatch
+                push!(matching_genotypes, genotype)
+            else
+                @assert match == NotMatching
+            end
         end
+
+        # Make sure the set of genotypes is not unresolvable
+        if length(matching_genotypes) > 1
+            error(
+                "Sample \"$(sample_genotype.sample)\" matches multiple genotypes: " * 
+                "\"$(matching_genotypes[1].name)\", and \"$(matching_genotypes[2].name)\""
+            )
+        end
+
+        if !isempty(matching_genotypes) && !isempty(compatible_genotypes)
+            error(
+                "Sample \"$(sample_genotype.sample)\" matches genotype " * 
+                "\"$(matching_genotypes[1].name)\", but is also compatible with " *
+                "\"$(compatible_genotypes[1].name)\". Make sure genotypes are disjoint."
+            )
+        end
+
+        # If there are any matching genotypes now, there can be only one, and no
+        # compatible ones
+        if !isempty(matching_genotypes)
+            push!(res_known, (sample_genotype, only(matching_genotypes)))
+            continue
+        end
+
+        # If not compatible with anything, it's certainly a new one
+        if isempty(compatible_genotypes)
+            push!(res_new, sample_genotype)
+            continue
+        end
+
+        # Else it's unknown
+        push!(res_unknown, (sample_genotype, copy(compatible_genotypes)))
     end
     return (res_empty, res_known, res_unknown, res_new)
 end
@@ -390,6 +387,7 @@ function write_genotype_report(
                 for genotype in genotypes
                     println(io, "\t\tMatches\t", genotype.name)
                 end
+                println(io)
             end
             println(io)
         end
