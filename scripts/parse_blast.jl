@@ -141,7 +141,7 @@ function main(
     categories = categorize_genotypes(sample_genotypes, known_genotypes)
     write_genotype_report(genotype_report_path, categories...)
 
-    tree_segments = Set(map(i -> parse(Segment, i), split(tree_segments_str, ',')))
+    tree_segments = Set(map(i -> parse(Segment, i), split(strip(tree_segments_str), ',')))
     write_tree_fnas(cattypes_dir, tree_segments, consensus, sample_genotypes)
     return nothing
 end
@@ -435,6 +435,7 @@ function write_tree_fnas(
         genotype = genotype_of_sample[sampleseq.sample]
         for i in 1:N_SEGMENTS
             segment = Segment(i - 1)
+            segment ∈ tree_segments || continue
             dict = genotype.v[i]
             dict === nothing && continue
             v = sampleseq.seqs[i]
