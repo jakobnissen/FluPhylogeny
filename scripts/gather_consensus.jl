@@ -1,22 +1,25 @@
-# usage: julia gather_consensus.jl refdir tmp/cat consensus_dir
+# usage: julia gather_consensus.jl refdir tmp/catcons consensus_dir
+
+module GatherConsensus
 
 using FASTX: FASTA
 using BioSequences: LongDNASeq
 using Influenza: Segment, Sample, load_references, split_segment
 
-"Represents a DNA sequence"
-struct Seq
-    name::String
+struct SimpleFASTA
+    header::String
     seq::LongDNASeq
 end
 
-function Seq(record::FASTA.Record)
-    seq = FASTA.sequence(LongDNASeq, record)
-    name = let
-        h = FASTA.header(record)
-        h === nothing ? error("Empty header in FASTA record") : h
-    end
-    Seq(name, seq)
+"Represents a DNA sequence"
+struct Seq
+    name::String
+    sample::Sample
+    segment::Segment
+    # order 1 means primary segment; 2,3,4 etc are secondary.
+    # name + order combination is unique within a run
+    order::UInt8
+    seq::LongDNASeq
 end
 
 function main(
@@ -26,53 +29,62 @@ function main(
 )
     segments = map(readdir(phylodir)) do entry
         parse(Segment, entry)
-    end
-
-    consensus = load_consensus(consdir)
+    end |> Set
 
     # Remove consensus of irrelevant segments
-    filter!(consensus) do (_, segment, _)
-        in(segment, segments)
-    end
+    consensus = filter!(seq -> seq.segment in segments, load_consensus(consdir))
 
-    # Split by segment and ensure uniqueness of names within one segment
+    # Split by segment and ensure uniqueness of name+order within one segment
     bysegment = Dict(s => Seq[] for s in segments)
-    names = Dict(s => Set{String}() for s in segments)
-    for (_, segment, seq) in consensus
-        if seq.name ∈ names[segment]
-            error("Name \"$(seq.name)\", segment $segment is not unique")
+    name_orders = Dict(s => Set{Tuple{String, UInt8}}() for s in segments)
+    for seq in consensus
+        if (seq.name, seq.order) ∈ name_orders[seq.segment]
+            error("Name \"$(seq.name)\", order $(seq.order) segment $(seq.segment) is not unique")
         end
-        push!(bysegment[segment], seq)
-        push!(names[segment], seq.name)
+        push!(bysegment[seq.segment], seq)
+        push!(name_orders[seq.segment], (seq.name, seq.order))
     end
 
     dump_consensus(outdir, bysegment)
 end
 
-function load_consensus(
-    dir::AbstractString
-)::Vector{Tuple{Sample, Segment, Seq}}
-    result = Vector{Tuple{Sample, Segment, Seq}}()
-    record = FASTA.Record()
+function load_consensus(dir::AbstractString)::Vector{Seq}
+    result = Seq[]
     for _sample in readdir(dir)
         sample = Sample(_sample)
-        path = joinpath(dir, _sample, "primary.fna")
-        isfile(path) && 
-        open(FASTA.Reader, path) do reader
-            while !eof(reader)
-                read!(reader, record)
-                header = let
-                    h = FASTA.header(record)
-                    h === nothing ? error("Record in $path has no header") : h
-                end
-                (name, segment) = split_segment(header)
-                dnaseq = FASTA.sequence(LongDNASeq, record)
-                seq = Seq(name, dnaseq)
-                push!(result, (sample, segment, seq))
-            end
+        append!(result, load_primary(joinpath(dir, _sample, "primary.fna"), sample))
+        secondary_path = joinpath(dir, _sample, "secondary.fna")
+        if isfile(secondary_path)
+            append!(result, load_secondary(joinpath(dir, _sample, "secondary.fna"), sample))
         end
     end
     return result
+end
+
+function load_fna(path::AbstractString)::Vector{SimpleFASTA}
+    open(FASTA.Reader, path) do reader
+        map(reader) do record
+            header = let
+                h = FASTA.header(record)
+                h === nothing ? error("Error: No header in record in \"$path\"") : h
+            end
+            SimpleFASTA(header, FASTA.sequence(LongDNASeq, record))
+        end
+    end
+end
+
+function load_primary(path::AbstractString, sample::Sample)::Vector{Seq}
+    map(load_fna(path)) do fasta
+        name, segment = split_segment(fasta.header)
+        Seq(name, sample, segment, 1, fasta.seq)
+    end
+end
+
+function load_secondary(path::AbstractString, sample::Sample)::Vector{Seq}
+    map(load_fna(path)) do fasta
+        name, segstr, order = rsplit(fasta.header, '_', limit=3)
+        Seq(name, sample, parse(Segment, segstr), parse(UInt8, order), fasta.seq)
+    end
 end
 
 function dump_consensus(
@@ -82,15 +94,20 @@ function dump_consensus(
     for (segment, seqs) in consensus
         open(FASTA.Writer, joinpath(outdir, string(segment) * ".fna")) do writer
             for seq in seqs
-                write(writer, FASTA.Record(seq.name, seq.seq))
+                name_order = seq.name * '_' * string(seq.order)
+                write(writer, FASTA.Record(name_order, seq.seq))
             end
         end
     end 
 end
 
-if length(ARGS) == 3
-    main(ARGS...)
-else
-    println("Usage: julia gather_consensus.jl refdir tmp/cat consensus_dir")
-    exit(1)
+if abspath(PROGRAM_FILE) == @__FILE__
+    if length(ARGS) == 3
+        main(ARGS...)
+    else
+        println("Usage: julia gather_consensus.jl refdir tmp/cat consensus_dir")
+        exit(1)
+    end
 end
+
+end # module

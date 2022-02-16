@@ -31,6 +31,10 @@ possible_hosts = set(os.listdir(TOP_REF_DIR))
 if HOST not in possible_hosts:
     raise KeyError(f"Directory for host {HOST} not found in {TOP_REF_DIR}")
 
+# We expect human viruses to be quite close to the reference viruses, and any virus
+# significantly different from the seasonal references is of interest, so
+# we set a high thresholds.
+# Empirically, fairly distant subtypes can be 87% identical on NA.
 MINIMUM_IDENTITY = 0.96 if HOST == 'human' else 0.8
 
 REFDIR = os.path.join(TOP_REF_DIR, HOST)
@@ -86,7 +90,7 @@ with open(os.path.join(REFDIR, "genotypes.tsv")) as file:
 def all_inputs(wildcards):
     # This is the function that gets all the segment/type combinations into the DAG
     trigger = checkpoints.genotypes.get()
-    files = ["genotypes.txt", "tmp/genotypes.tsv"]
+    files = ["genotypes.txt"]
     
     combos = [p[:-4].partition('_') for p in os.listdir("tmp/cattypes")]
     if HOST == 'human':
@@ -167,7 +171,6 @@ checkpoint genotypes:
         blast=expand("tmp/blast/{segment}.blastout", segment=ALL_SEGMENTS),
         cons=expand("tmp/catcons/{segment}.fna", segment=ALL_SEGMENTS)
     output:
-        clades="tmp/genotypes.tsv",
         genotypes="genotypes.txt"
         # Also tmp/cat/{segment}_{clade}.fna for every seg/type found
         # but the pairs ar unknown at this point, so it's not part of the rule
@@ -177,15 +180,16 @@ checkpoint genotypes:
         simple_genotypes=lambda wc: "simple.txt" if HOST == "swine" else "nothing",
         catconsdir="tmp/catcons", # corresponds to input.cons
         outconsdir="tmp/cattypes", # dir of output .fna files
+        inconsdir="sequences", # we use this to load a list of sample names
         blastdir="tmp/blast", # corresponds to input.blast
         tree_segments=",".join(TREE_SEGMENTS),
         known_genotypes=os.path.join(REFDIR, "genotypes.tsv"),
         minid=MINIMUM_IDENTITY
     shell:
         "{params.juliacmd} {params.scriptpath:q} "
-        "{output.genotypes} {params.simple_genotypes} {output.clades} {params.outconsdir} "
+        "{output.genotypes} {params.outconsdir} "
         "{params.tree_segments} {params.known_genotypes:q} {params.catconsdir} "
-        "{params.blastdir} {params.minid}"
+        "{params.inconsdir} {params.blastdir} {params.minid}"
 
 ##################
 # After checkpoint

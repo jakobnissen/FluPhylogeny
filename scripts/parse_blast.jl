@@ -3,7 +3,9 @@
 # Create genotypes.txt report
 # Write tmp/cat/{segment}_{clade}.fna for all present segment/clade combos
 
-using Influenza
+module ParseBlast
+
+using Influenza: Influenza, Clade, Sample, Segment, Segments, split_clade
 using FASTX: FASTA
 using ErrorTypes: Option, none, some, is_error, @unwrap_or
 using BioSequences: LongDNASeq
@@ -29,22 +31,7 @@ imap(f) = x -> Iterators.map(f, x)
 struct GenoType
     name::String
     # nothing if the segment is not considered
-    v::Vector{Union{Clade, Nothing}}
-
-    function GenoType(name::AbstractString, v::Vector{Union{Clade, Nothing}})
-        if length(v) != N_SEGMENTS
-            error("Must be $N_SEGMENTS long")
-        end
-        new(convert(String, name), v)
-    end
-end
-
-@enum MatchFailure::UInt8 NoSegment NoMatch
-
-function Base.print(io::IO, m::MatchFailure)
-    m === NoSegment ? print(io, "No segment") :
-    m === NoMatch ? print(io, "No match") :
-    error()
+    v::SegmentTuple{Union{Clade, Nothing}}
 end
 
 struct Match
@@ -59,154 +46,174 @@ struct Match
     end
 end
 
+function Base.print(io::IO, m::Match)
+    id = @sprintf "%.2f %%" (100 * m.identity)
+    print(io, m.clade, '\t', m.identifier, '\t', id)
+end
+
+@enum MatchFailure::UInt8 NoHits AmbiguousHits
+
+function Base.print(io::IO, m::MatchFailure)
+    s = if m == NoHits
+        "No match"
+    elseif m == AmbiguousHits
+        "Ambiguous BLAST hits"
+    else
+        error()
+    end
+    print(io, s)
+end
+
 struct SampleGenoType
     sample::Sample
-    v::Vector{Union{Match, MatchFailure}}
+    # Top level nothing means no segment present. Bottom-level nothing means
+    # no match for the given segment. In the dict, the segments are ordered by
+    # their "order"
+    v::SegmentTuple{Union{Nothing, Dict{UInt8, Union{MatchFailure, Match}}}}
+end
 
-    function SampleGenoType(name::Sample, v::Vector{Union{Match, MatchFailure}})
-        if length(v) != N_SEGMENTS
-            error("Must be $N_SEGMENTS long")
+Base.isempty(s::SampleGenoType) = all(isnothing, s.v)
+
+# This means: Does the sample genotype have multiple copies of the same
+# segment that do not map to the same clade
+function has_divergent_segments(s::SampleGenoType)
+    any(s.v) do i
+        # If a segment is missing, it is not divergent
+        i === nothing && return false
+        # If it's in only one copy, it's not divergent
+        length(i) == 1 && return false
+        clade = nothing
+        any(i) do maybe_match
+            # If there are multiple segments and one is not a match,
+            # it's divergent
+            maybe_match isa Match || return true
+            if isnothing(clade)
+                clade = match.clade
+                false
+            else
+                # Alternatively, if it's a match but to a different
+                # clade, it's divergent
+                match.clade !== clade
+            end
         end
-        new(name, v)
     end
 end
 
-function clades(g::GenoType)
-    ((Segment(i-1), f::Clade) for (i,f) in enumerate(g.v) if f isa Clade)
+struct SampleSeqs
+    sample::Sample
+    # either missing segments, or any number of (order, seq)
+    seqs::SegmentTuple{Union{Nothing, Vector{Tuple{UInt8, LongDNASeq}}}}
 end
 
-function clades(g::SampleGenoType)
-    ((Segment(i-1), f.clade::Clade) for (i,f) in enumerate(g.v) if f isa Match)
-end
-
-function matches(g::SampleGenoType)
-    ((Segment(i-1), f) for (i,f) in enumerate(g.v) if f isa Match)
-end
-
-function hits(g::SampleGenoType)
-    ((Segment(i-1), f) for (i,f) in enumerate(g.v) if f != NoSegment)
-end
-
-# Could src be an instance of dst?
-function is_compatible(sample::SampleGenoType, genotype::GenoType)
+# Could the sample possibly be an instance of the genotype?
+function is_compatible(sample::SampleGenoType, genotype::GenoType)::Bool
     all(1:N_SEGMENTS) do i
         s, g = sample.v[i], genotype.v[i]
-        s == NoSegment || isnothing(g) || (s isa Match && s.clade == g)
+        isnothing(g) || # specified segment is not considered in genotype
+        isnothing(s) || # segment is missing from sample
+        all(s) do (order, maybe_match)
+            maybe_match isa Match &&
+            maybe_match.clade == g
+        end
     end
-end
-
-# is src actually an instance of dst?
-function is_match(sample::SampleGenoType, genotype::GenoType)
-    all(1:N_SEGMENTS) do i
-        s, g = sample.v[i], genotype.v[i]
-        isnothing(g) || (s isa Match && s.clade == g)
-    end
-end
-
-function missing_segments(sample::SampleGenoType, genotype::GenoType)
-    [Segment(i-1) for i in 1:N_SEGMENTS if sample.v[i] == NoSegment && genotype.v[i] isa Clade]
 end
 
 function main(
     genotype_report_path::AbstractString, # output: genotypes.txt
-    simple_genotype_path::Union{Nothing, AbstractString},
-    # output: Simplified version of genotypes.txt with only HA and NA, if present.
-    genotypes_out_path::AbstractString,  # output: tmp/genotypes.tsv
     cattypes_dir::AbstractString, # output: dir to put {segment}_{clade}.fna
     tree_segments_str::AbstractString, # comma-sep string of segments to
         # write {segment}_{clade}.fna for
     known_genotypes_path::AbstractString, # input: genotypes.tsv ref input
     cat_dir::AbstractString, # input: dir w. concatenated consensus seqs
+    cons_dir::AbstractString, # input: dir to read a list of sample names from
     blast_dir::AbstractString, # input: dir w. BLAST results
     minid::AbstractFloat
 )
     isdir(cattypes_dir) || mkpath(cattypes_dir)
-    consensus = load_consensus(cat_dir)
+    consensus = load_consensus(cat_dir, cons_dir)
     sample_genotypes = load_sample_genotypes(blast_dir, consensus, minid)
     known_genotypes = load_known_genotypes(known_genotypes_path)
+    categories = categorize_genotypes(sample_genotypes, known_genotypes)
+    write_genotype_report(genotype_report_path, categories...)
 
-    # Output: tmp/genotypes.tsv
-    write_genotypes(genotypes_out_path, simple_genotype_path, sample_genotypes)
-
-    # Output: genotypes.txt
-    write_genotype_report(genotype_report_path, known_genotypes, sample_genotypes)
-
-    # Output: tmp/cat/{segment}_{clade}.fna for segments in TREE_SEGMENTS
     tree_segments = Set(map(i -> parse(Segment, i), split(tree_segments_str, ',')))
-    
-    write_fasta_combos(cattypes_dir, tree_segments, consensus, sample_genotypes)
+    write_tree_fnas(cattypes_dir, tree_segments, consensus, sample_genotypes)
     return nothing
 end
 
 function load_consensus(
-    cons_dir::AbstractString # dir of {segment}.fna
-)::Vector{Tuple{Sample, SegmentTuple{Option{LongDNASeq}}}}
+    cons_dir::AbstractString, # dir of {segment}.fna
+    samples_dir::AbstractString # any dir to read samples from
+)::Vector{SampleSeqs}
     record = FASTA.Record()
-    intermediate = Dict{Sample, Vector{Option{LongDNASeq}}}()
+    intermediate = Dict(
+        Sample(s) => 
+        [Tuple{UInt8, LongDNASeq}[] for i in 1:N_SEGMENTS]
+        for s in readdir(samples_dir)
+    )
     for file in readdir(cons_dir, join=true)
         segment = parse(Segment, basename(first(splitext(file))))
         open(FASTA.Reader, file) do reader
             while !eof(reader)
                 read!(reader, record)
-                sample = let
+                sample, order = let
                     h = FASTA.header(record)
                     h === nothing ? error("No header in record in $file") : Sample(h)
-                end
-                if !haskey(intermediate, sample)
-                    intermediate[sample] = fill(none(LongDNASeq), N_SEGMENTS)
+                    s, o = rsplit(h, '_')
+                    (Sample(s), parse(UInt8, o))
                 end
                 seq = FASTA.sequence(LongDNASeq, record)
-                intermediate[sample][Integer(segment) + 1] = some(seq)
+                push!(intermediate[sample][Integer(segment) + 1], (order, seq))
             end
         end
     end
-    return [(s, SegmentTuple(v)) for (s, v) in intermediate]
+    intermediate |> imap() do (sample, segment_orders)
+        tup = ntuple(N_SEGMENTS) do i
+            v = segment_orders[i]
+            isempty(v) ? nothing : v
+        end
+        SampleSeqs(sample, tup)
+    end |> collect
 end
 
 function load_sample_genotypes(
     blast_dir::AbstractString,
-    consensus::Vector{Tuple{Sample, SegmentTuple{Option{LongDNASeq}}}},
-    minid::AbstractFloat,
+    consensus::Vector{SampleSeqs},
+    min_id::AbstractFloat,
 )::Vector{SampleGenoType}
-    
-    # Initialize each segment with NoSegment
-    sample_genotype_dict = Dict(
-        sample => 
-        fill!(Vector{Union{MatchFailure, Match}}(undef, N_SEGMENTS), NoSegment)
-        for (sample, _) in consensus
-    )
+    # The type inside SampleGenoType
+    sT = SegmentTuple{Union{Nothing, Dict{UInt8, Union{MatchFailure, Match}}}}
 
-    # Set all the ones without missing segments to NoMatch
-    for (sample, seqtuple) in consensus
-        for (i, mseq) in enumerate(seqtuple)
-            is_error(mseq) || (sample_genotype_dict[sample][i] = NoMatch)
+    # Initialize with each present segment being set to no hits, since any segments
+    # not present in the BLAST does indeed have no hits
+    intermediate::Dict{Sample, sT} = Dict(map(consensus) do sampleseq
+        tup = map(sampleseq.seqs) do maybe_segvector
+            isnothing(maybe_segvector) && return nothing
+            Dict(o => NoHits for (o, s) in maybe_segvector)
         end
-    end
+        sampleseq.sample => tup
+    end)
 
     # Now read blast and set the matched segments to clades
     for file in readdir(blast_dir, join=true)
         segment = parse(Segment, basename(first(splitext(file))))
         rows = open(parse_blast_io, file)
-        bysample = Dict{Sample, typeof(rows)}()
+        byquery = Dict{Tuple{Sample, UInt8}, typeof(rows)}()
         for row in rows
-            push!(valtype(bysample), bysample, Sample(row.qacc), row)
+            s, o = rsplit(row.qacc, '_', limit=2)
+            sample, order = (Sample(s), parse(UInt8, o))
+            push!(get!(valtype(byquery), byquery, (sample, order)), row)
         end
-        
-
-
-        filter_blast!(rows, minid)
-        keep_best!(rows)
-        for row in rows
-            sample = Sample(row.qacc)
-            clade = last(split_clade(row.sacc))
-            id = row.pident
-            identifier = first(Influenza.split_clade(row.sacc))
-            match = Match(clade, identifier, id)
-            sample_genotype_dict[sample][Integer(segment) + 1] = match
+        for ((sample, order), rowvec) in byquery
+            d = intermediate[sample][Integer(segment) + 0x01]::Dict
+            d[order] = assign_clade(rowvec, min_id)
         end
-    end
-    v = [SampleGenoType(k, v) for (k, v) in sample_genotype_dict]
-    return sort!(v, by=i -> i.sample)
+    end 
+
+    # Convert to output type
+    intermediate |> imap() do (sample, st)
+        SampleGenoType(sample, st)
+    end |> collect 
 end
 
 # Pass in a vector that only contains one query
@@ -218,47 +225,24 @@ function assign_clade(
     filter!(i -> i.qcovhsp ≥ 0.8, v)
 
     # It's a match if: Hit above minimum identity
-    # and second hit is 3%-points and 50% further away 
+    # and second-best clade hit is 3%-points and 50% further away 
     sort!(v, by=i -> i.bitscore, rev=true)
     best = first(v)
-    best.pident < min_id && return NoMatch
-    identifier, clade = last(split_clade(best.sacc))
+    best.pident < min_id && return NoHits
+    identifier, clade = split_clade(best.sacc)
     match = Match(clade, identifier, best.pident)
-    best_template = best.sacc
-    next_template_pos = findfirst(val -> val.sacc != best_template, v)
-    next_template_pos === nothing && return match
-    second_id = v[next_template_pos].pident
+    next_clade_pos = findfirst(v) do row
+        _, otherclade = split_clade(row.sacc)
+        otherclade != clade
+    end
+    next_clade_pos === nothing && return match
+    second_id = v[next_clade_pos].pident
     return if (second_id + 0.03 > best.pident ||
         (1 - second_id) < 1.5 * (1 - best.pident)
     )
-        NoMatch
+        AmbiguousHits
     else
         match
-    end
-end
-
-function keep_best!(v::Vector{<:NamedTuple})
-    isempty(v) && return v
-    sort!(v, by=i -> (i.qacc, i.bitscore), rev=true)
-    query = first(v).qacc
-    len = 1
-    for i in 2:lastindex(v)
-        blastrow = v[i]
-        if blastrow.qacc != query
-            len += 1
-            v[len] = blastrow
-            query = blastrow.qacc
-        end
-    end
-    resize!(v, len)
-end
-
-function filter_blast!(rows::Vector{<:NamedTuple}, minid::AbstractFloat)
-    # For now, just some haphazardly chosen filters: Minimum 80% identity
-    # over at least 80% of the query
-    filter!(rows) do row
-        row.pident ≥ minid &&
-        row.qcovhsp ≥ 0.8
     end
 end
 
@@ -276,9 +260,26 @@ function load_known_genotypes(path::AbstractString)::Vector{GenoType}
         for (segment, f) in zip(segments, line[2:end])
             v[Integer(segment) + 1] = Clade(f)
         end
-        push!(result, GenoType(first(line), v))
+        push!(result, GenoType(first(line), SegmentTuple(v)))
     end
     return sort!(result, by=i -> i.name)
+end
+
+# The simple report is to make it easier for people to decide what to answer
+# when a sample has been sent to NGS. Here, we just look at HA and NA
+#=
+function write_simple_report(
+    path::AbstractString,
+    sample_genotypes::Vector{SampleGenoType}
+)
+    open(path, "w") do io
+        for genotype in sample_genotypes, (i, segment_result) in enumerate(genotype.v)
+            segment = Segment(i - 1)
+            # Status OK if 1 HA and NA clade
+
+            # 
+
+    end
 end
 
 function write_genotypes(
@@ -312,112 +313,146 @@ function write_genotypes(
         end
     end
 end
+=#
+
+# Categorize samples into empty, known genotypes, indetermine, and new
+function categorize_genotypes(
+    sample_genotypes::Vector{SampleGenoType},
+    known_genotypes::Vector{GenoType}
+)::NTuple{4, Vector}
+    res_empty = SampleGenoType[]
+    res_known = Tuple{SampleGenoType, GenoType}[]
+    # unknown includes superinfection that cannot be nailed down to one genotype
+    res_unknown = Tuple{SampleGenoType, Vector{GenoType}}[]
+    res_new = SampleGenoType[]
+
+    possible_genotypes = GenoType[]
+    for sample_genotype in sample_genotypes
+        if isempty(sample_genotype)
+            push!(res_empty, sample_genotype)
+            continue
+        end
+
+        empty!(possible_genotypes)
+        for genotype in known_genotypes
+            is_compatible(sample_genotype, genotype) && push!(possible_genotypes, genotype)
+        end
+
+        divergent = has_divergent_segments(sample_genotype)
+        if length(possible_genotypes) == 1
+            push!(res_known, (sample_genotype, only(possible_genotypes)))
+        elseif length(possible_genotypes) == 0 && !divergent
+            push!(res_new, sample_genotype)
+        else
+            push!(res_unknown, (sample_genotype, copy(possible_genotypes)))
+        end
+    end
+    return (res_empty, res_known, res_unknown, res_new)
+end
 
 # Output: genotypes.txt
 function write_genotype_report(
     genotype_report_path::AbstractString,
-    known_genotypes::Vector{GenoType},
-    sample_genotypes::Vector{SampleGenoType}
+    res_empty::Vector{SampleGenoType},
+    res_known::Vector{Tuple{SampleGenoType, GenoType}},
+    res_unknown::Vector{Tuple{SampleGenoType, Vector{GenoType}}},
+    res_new::Vector{SampleGenoType}
 )
-    if isempty(known_genotypes) || isempty(sample_genotypes)
-        touch(genotype_report_path)
-        return nothing
-    end
-
-    good = Vector{Tuple{SampleGenoType, GenoType}}()
-    indeterminate = Vector{Tuple{SampleGenoType, Vector{GenoType}}}()
-    new = Vector{SampleGenoType}()
-
-    possible_genotypes = GenoType[]
-    for sample_genotype in sample_genotypes
-        empty!(possible_genotypes)
-        for genotype in known_genotypes
-            if is_compatible(sample_genotype, genotype)
-                push!(possible_genotypes, genotype)
-            end
-        end
-
-        # If only one possibility, and precise match
-        if length(possible_genotypes) == 1
-            push!(good, (sample_genotype, first(possible_genotypes)))
-        elseif isempty(possible_genotypes)
-            push!(new, sample_genotype)
-        else
-            push!(indeterminate, (sample_genotype, copy(possible_genotypes)))
-        end
-    end
-
-    if !isempty(new)
+    if !isempty(res_new)
         @warn "Possible new genotype detected, see genotypes.txt report"
     end
-
-    # Now write report
     open(genotype_report_path, "w") do io
-        if !isempty(good)
+        # Print empty
+        if !isempty(res_empty)
+            println(io, "Empty genotypes:")
+            for sample_genotype in res_empty
+                println(io, '\t', sample_genotype.sample)
+            end
+            println(io)
+        end
+
+        # Print known
+        if !isempty(res_known)
             println(io, "Known genotypes:")
-            for (s, g) in good
-                print(io, '\t', s.sample, '\t', g.name)
-                ms = missing_segments(s, g)
-                if !isempty(ms)
-                    print(io, " (missing: ", join(ms, ','), ')')
-                end
-                println(io)
+            for (sample_genotype, genotype) in res_known
+                println(io, '\t', sample_genotype.sample, '\t', genotype.name)
             end
             println(io)
         end
-        if !isempty(indeterminate)
+
+        # Print unknown
+        if !isempty(res_unknown)
             println(io, "Indeterminate genotypes:")
-            for (g, gs) in indeterminate
-                println(io, '\t', g.sample)
-                for (seg, match) in matches(g)
-                    sid = @sprintf "%.2f %%" (100 * match.identity)
-                    println(io, "\t\t", join([seg, match.clade, match.identifier, sid], '\t'))
-                end
+            for (sample_genotype, genotypes) in res_unknown
+                println(io, '\t', sample_genotype.sample)
+                print_match_status(io, sample_genotype)
                 println(io)
-                for g_ in gs
-                    println(io, "\t\tMatches ", g_.name)
+                for genotype in genotypes
+                    println(io, "\t\tMatches\t", genotype.name)
                 end
+            end
+            println(io)
+        end
+
+        # Print new
+        if !isempty(res_new)
+            println(io, "New genotypes:")
+            for sample_genotype in res_new
+                println(io, '\t', sample_genotype.sample)
+                print_match_status(io, sample_genotype)
                 println(io)
             end
             println(io)
         end
-        if !isempty(new)
-            println(io, "New genotypes:")
-            for g in new
-                println(io, '\t', g.sample)
-                for (seg, hit) in hits(g)
-                    if hit == NoMatch
-                        println(io, "\t\t", seg, '\t', hit)
-                    else
-                        sid = @sprintf "%.2f %%" (100 * hit.identity)
-                        println(io, "\t\t", join([seg, hit.clade, hit.identifier, sid], '\t'))
-                    end
-                end
-                println(io)
+    end
+end
+
+function print_match_status(io::IO, s::SampleGenoType)
+    for (i, segment_status) in enumerate(s.v)
+        segment = Segment(i - 1)
+        print(io, "\t\t", segment)
+        if isnothing(segment_status)
+            println(io, "\tNo segment")
+        elseif length(segment_status) == 1
+            m = only(values(segment_status))
+            println(io, '\t', string(m))
+        else
+            println(io)
+            for (order, m) in sort!(collect(segment_status), by=first)
+                println(io, "\t\t\t", order, '\t', m)
             end
         end
     end
-    return nothing
 end
 
-function write_fasta_combos(
+function write_tree_fnas(
     cattypes_dir::AbstractString,
     tree_segments::Set{Segment},
-    consensus::Vector{Tuple{Sample, SegmentTuple{Option{LongDNASeq}}}},
+    sampleseqs::Vector{SampleSeqs},
     sample_genotypes::Vector{SampleGenoType}
 )
     genotype_of_sample = Dict(g.sample => g for g in sample_genotypes)
-    by_combo = Dict{Tuple{Segment, Clade}, Vector{FASTA.Record}}()
-    for (sample, mseqs) in consensus
-        sample_genotype = genotype_of_sample[sample]
-        for (segment, clade) in clades(sample_genotype)
-            segment ∈ tree_segments || continue
-            seq = @unwrap_or mseqs[Integer(segment) + 1] continue
-            record = FASTA.Record(nameof(sample), seq)
-            push!(get!(valtype(by_combo), by_combo, (segment, clade)), record)
+    by_segtype = Dict{Tuple{Segment, Clade}, Vector{FASTA.Record}}()
+    for sampleseq in sampleseqs
+        genotype = genotype_of_sample[sampleseq.sample]
+        for i in 1:N_SEGMENTS
+            segment = Segment(i - 1)
+            dict = genotype.v[i]
+            dict === nothing && continue
+            v = sampleseq.seqs[i]
+            v === nothing && continue
+            for (order, seq) in v
+                maybe_match = dict[order]
+                maybe_match isa Match || continue
+                header = string(sampleseq.sample) * '_' * string(order)
+                record = FASTA.Record(header, seq)
+                key = (segment, maybe_match.clade)
+                push!(get!(valtype(by_segtype), by_segtype, key), record)
+            end
         end
     end
-    for ((segment, clade), records) in by_combo
+
+    for ((segment, clade), records) in by_segtype
         path = joinpath(cattypes_dir, "$(segment)_$(clade).fna")
         open(FASTA.Writer, path) do writer
             foreach(rec -> write(writer, rec), records)
@@ -427,19 +462,20 @@ function write_fasta_combos(
 end 
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    if length(ARGS) != 9
+    if length(ARGS) != 8
         println(
             "Usage: julia parse_blast.jl genotype_report_path " * 
-            "genotype_out_path simple_genotype_path cattypes_dir tree_segments_str " *
-            " known_genotypes_path cat_dir blast_dir min_id"
+            "cattypes_dir tree_segments_str " *
+            "known_genotypes_path cat_dir cons_dir blast_dir min_id"
         )
         exit(1)
     else
-        minid = parse(Float64, ARGS[9])
-        if minid < 0 || minid > 1.0
+        minid = parse(Float64, ARGS[8])
+        if !isfinite(minid) || minid < 0 || minid > 1
             error("Minimum ID must be in 0..1")
         end
-        simple_genotype_path = strip(ARGS[3]) == "nothing" ? nothing : ARGS[3]
-        main(ARGS[1:2]..., simple_genotype_path, ARGS[4:8]..., minid)
+        main(ARGS[1:7]..., minid)
     end
 end
+
+end # module
