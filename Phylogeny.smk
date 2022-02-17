@@ -179,7 +179,7 @@ checkpoint genotypes:
         scriptpath=f"{SNAKEDIR}/scripts/parse_blast.jl",
         catconsdir="tmp/catcons", # corresponds to input.cons
         outconsdir="tmp/cattypes", # dir of output .fna files
-        inconsdir="sequences", # we use this to load a list of sample names
+        inconsdir=CONSENSUS_DIR, # we use this to load a list of sample names
         blastdir="tmp/blast", # corresponds to input.blast
         tree_segments=",".join(TREE_SEGMENTS),
         known_genotypes=os.path.join(REFDIR, "genotypes.tsv"),
