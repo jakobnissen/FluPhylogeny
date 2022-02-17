@@ -7,7 +7,7 @@ module ParseBlast
 
 using Influenza: Influenza, Clade, Sample, Segment, Segments, split_clade
 using FASTX: FASTA
-using ErrorTypes: Option, none, some, is_error, @unwrap_or
+using ErrorTypes: Option, none, some, is_error, unwrap, @unwrap_or
 using BioSequences: LongDNASeq
 using Printf: @sprintf
 using BlastParse: BlastParse
@@ -30,8 +30,8 @@ imap(f) = x -> Iterators.map(f, x)
 # Then use bitwise operations to compare genotypes
 struct GenoType
     name::String
-    # nothing if the segment is not considered
-    v::SegmentTuple{Union{Nothing, Clade}}
+    # none if the segment is not considered
+    v::SegmentTuple{Option{Clade}}
 end
 
 struct Match
@@ -66,29 +66,29 @@ end
 
 struct SampleGenoType
     sample::Sample
-    # Top level nothing means no segment present. The key of the dict is their
+    # Top level none means no segment present. The key of the dict is their
     # "order" as assigned by consensus pipeline, to disambiguate between
     # segcopies
-    v::SegmentTuple{Union{Nothing, Dict{UInt8, Union{MatchFailure, Match}}}}
+    v::SegmentTuple{Option{Dict{UInt8, Union{MatchFailure, Match}}}}
 end
 
 function is_empty(s::SampleGenoType, relevant::SegmentTuple{Bool})
     all(1:N_SEGMENTS) do i
-        s.v[i] === nothing || !relevant[i]
+        is_error(s.v[i]) || !relevant[i]
     end
 end
 
 function has_nohits_segment(s::SampleGenoType)
     any(s.v) do i
-        i === nothing && return false
-        any(isequal(NoHits), values(i))
+        d = @unwrap_or i return false
+        any(isequal(NoHits), values(d))
     end
 end
 
 struct SampleSeqs
     sample::Sample
     # either missing segments, or any number of (order, seq)
-    seqs::SegmentTuple{Union{Nothing, Vector{Tuple{UInt8, LongDNASeq}}}}
+    seqs::SegmentTuple{Option{Vector{Tuple{UInt8, LongDNASeq}}}}
 end
 
 @enum GenotypeMatch::UInt8 NotMatching CouldMatch UniqueMatch
@@ -98,31 +98,31 @@ function compatibility(sample::SampleGenoType, genotype::GenoType)::GenotypeMatc
     for i in 1:N_SEGMENTS
         s, g = sample.v[i], genotype.v[i]
         # Ignore segment if not considered by the Genotype
-        isnothing(g) && continue
+        genotype_clade = @unwrap_or g continue
 
         # If missing from sample, it can't be a unique match, but could still match
-        if isnothing(s)
+        dict = @unwrap_or s begin
             unique_match = false
             continue
-        else
-            # If any matches hit or any match is ambiguous, it could match.
-            any_could = false
-            for (_, maybe_match) in s
-                if maybe_match isa Match
-                    if maybe_match.clade == g
-                        any_could = true
-                    else
-                        unique_match = false
-                    end
-                elseif maybe_match == NoHits
-                    unique_match = false
-                elseif maybe_match == AmbiguousHits
-                    unique_match = false
-                    any_could = true
-                end
-            end
-            any_could || return NotMatching
         end
+
+        # If any matches hit or any match is ambiguous, it could match.
+        any_could = false
+        for (_, maybe_match) in dict
+            if maybe_match isa Match
+                if maybe_match.clade == genotype_clade
+                    any_could = true
+                else
+                    unique_match = false
+                end
+            elseif maybe_match == NoHits
+                unique_match = false
+            elseif maybe_match == AmbiguousHits
+                unique_match = false
+                any_could = true
+            end
+        end
+        any_could || return NotMatching
     end
     return unique_match ? UniqueMatch : CouldMatch
 end
@@ -179,7 +179,7 @@ function load_consensus(
     intermediate |> imap() do (sample, segment_orders)
         tup = ntuple(N_SEGMENTS) do i
             v = segment_orders[i]
-            isempty(v) ? nothing : v
+            isempty(v) ? none : some(v)
         end
         SampleSeqs(sample, tup)
     end |> collect
@@ -190,18 +190,18 @@ function load_sample_genotypes(
     consensus::Vector{SampleSeqs},
     min_id::AbstractFloat,
 )::Vector{SampleGenoType}
-    # The type inside SampleGenoType
-    sT = SegmentTuple{Union{Nothing, Dict{UInt8, Union{MatchFailure, Match}}}}
-
     # Initialize with each present segment being set to no hits, since any segments
     # not present in the BLAST does indeed have no hits
-    intermediate::Dict{Sample, sT} = Dict(map(consensus) do sampleseq
-        tup = map(sampleseq.seqs) do maybe_segvector
-            isnothing(maybe_segvector) && return nothing
-            Dict(o => NoHits for (o, s) in maybe_segvector)
+    dType = Dict{UInt8, Union{MatchFailure, Match}}
+
+    # TODO: Error in JET.jl: Try removing the "some": JET doesn't catch it!
+    intermediate::Dict{Sample, SegmentTuple{Option{dType}}} = (consensus |> imap() do sampleseq
+        tup::SegmentTuple{Option{dType}} = map(sampleseq.seqs) do maybe_segvector
+            segvector = @unwrap_or maybe_segvector return none(dType)
+            some(dType(o => NoHits for (o, s) in segvector))
         end
         sampleseq.sample => tup
-    end)
+    end |> Dict)
 
     # Now read blast and set the matched segments to clades
     for file in readdir(blast_dir, join=true)
@@ -214,7 +214,7 @@ function load_sample_genotypes(
             push!(get!(valtype(byquery), byquery, (sample, order)), row)
         end
         for ((sample, order), rowvec) in byquery
-            d = intermediate[sample][Integer(segment) + 0x01]::Dict
+            d = unwrap(intermediate[sample][Integer(segment) + 0x01])
             d[order] = assign_clade(rowvec, min_id)
         end
     end 
@@ -265,9 +265,9 @@ function load_known_genotypes(path::AbstractString)::Vector{GenoType}
     segments = map(i -> parse(Segment, i), lines[1][2:end])
     result = GenoType[]
     for line in lines[2:end]
-        v = Vector{Union{Nothing, Clade}}(nothing, N_SEGMENTS)
+        v = fill(none(Clade), N_SEGMENTS)
         for (segment, f) in zip(segments, line[2:end])
-            v[Integer(segment) + 1] = Clade(f)
+            v[Integer(segment) + 1] = some(Clade(f))
         end
         push!(result, GenoType(first(line), SegmentTuple(v)))
     end
@@ -280,7 +280,7 @@ function get_relevance(known_genotypes::Vector{GenoType})::SegmentTuple{Bool}
     for genotype in known_genotypes
         v = genotype.v
         for i in 1:N_SEGMENTS
-            if v[i] !== nothing
+            if !is_error(v[i])
                 is_relevant[i] = true
             end
         end
@@ -296,12 +296,13 @@ end
 function categorize_genotypes(
     sample_genotypes::Vector{SampleGenoType},
     known_genotypes::Vector{GenoType}
-)::NTuple{4, Vector}
+)::NTuple{5, Vector}
     res_empty = SampleGenoType[]
-    res_known = Tuple{SampleGenoType, GenoType}[]
+    res_precise = Tuple{SampleGenoType, GenoType}[]
+    # Not perfectly matching, but only one possibility of the known genotype
+    res_unique = Tuple{SampleGenoType, GenoType}[]
     # unknown includes superinfection that cannot be nailed down to one genotype
-    # it's nothing if due to superinfection, else contains possible genotypes
-    res_unknown = Tuple{SampleGenoType, Vector{GenoType}}[]
+    res_indeterminate = Tuple{SampleGenoType, Vector{GenoType}}[]
     res_new = SampleGenoType[]
 
     compatible_genotypes = GenoType[]
@@ -356,7 +357,7 @@ function categorize_genotypes(
         # If there are any matching genotypes now, there can be only one, and no
         # compatible ones
         if !isempty(matching_genotypes)
-            push!(res_known, (sample_genotype, only(matching_genotypes)))
+            push!(res_precise, (sample_genotype, only(matching_genotypes)))
             continue
         end
 
@@ -366,18 +367,25 @@ function categorize_genotypes(
             continue
         end
 
+        # If only one genotype is compatible, that's the definition of uniquely matching
+        if length(compatible_genotypes) == 1
+            push!(res_unique, (sample_genotype, only(compatible_genotypes)))
+            continue
+        end
+
         # Else it's unknown
-        push!(res_unknown, (sample_genotype, copy(compatible_genotypes)))
+        push!(res_indeterminate, (sample_genotype, copy(compatible_genotypes)))
     end
-    return (res_empty, res_known, res_unknown, res_new)
+    return (res_empty, res_precise, res_unique, res_indeterminate, res_new)
 end
 
 # Output: genotypes.txt
 function write_genotype_report(
     genotype_report_path::AbstractString,
     res_empty::Vector{SampleGenoType},
-    res_known::Vector{Tuple{SampleGenoType, GenoType}},
-    res_unknown::Vector{Tuple{SampleGenoType, Vector{GenoType}}},
+    res_precise::Vector{Tuple{SampleGenoType, GenoType}},
+    res_unique::Vector{Tuple{SampleGenoType, GenoType}},
+    res_indeterminate::Vector{Tuple{SampleGenoType, Vector{GenoType}}},
     res_new::Vector{SampleGenoType}
 )
     if !isempty(res_new)
@@ -386,7 +394,7 @@ function write_genotype_report(
     open(genotype_report_path, "w") do io
         # Print empty
         if !isempty(res_empty)
-            println(io, "Empty genotypes:")
+            println(io, "Empty samples:")
             for sample_genotype in res_empty
                 println(io, '\t', sample_genotype.sample)
             end
@@ -394,18 +402,29 @@ function write_genotype_report(
         end
 
         # Print known
-        if !isempty(res_known)
-            println(io, "Known genotypes:")
-            for (sample_genotype, genotype) in res_known
+        if !isempty(res_precise)
+            println(io, "Precise genotypes:")
+            for (sample_genotype, genotype) in res_precise
                 println(io, '\t', sample_genotype.sample, '\t', genotype.name)
             end
             println(io)
         end
 
+        # Print probable
+        if !isempty(res_precise)
+            println(io, "Uniquely matching genotypes:")
+            for (sample_genotype, genotype) in res_unique
+                println(io, '\t', sample_genotype.sample, '\t', genotype.name)
+                print_match_status(io, sample_genotype)
+                println(io)
+            end
+            println(io)
+        end
+
         # Print unknown
-        if !isempty(res_unknown)
+        if !isempty(res_indeterminate)
             println(io, "Indeterminate genotypes:")
-            for (sample_genotype, genotypes) in res_unknown
+            for (sample_genotype, genotypes) in res_indeterminate
                 println(io, '\t', sample_genotype.sample)
                 print_match_status(io, sample_genotype)
                 println(io)
@@ -434,14 +453,16 @@ function print_match_status(io::IO, s::SampleGenoType)
     for (i, segment_status) in enumerate(s.v)
         segment = Segment(i - 1)
         print(io, "\t\t", segment)
-        if isnothing(segment_status)
+        dict = @unwrap_or segment_status begin
             println(io, "\tNo segment")
-        elseif length(segment_status) == 1
-            m = only(values(segment_status))
+            continue
+        end 
+        if length(dict) == 1
+            m = only(values(dict))
             println(io, '\t', string(m))
         else
             println(io)
-            for (order, m) in sort!(collect(segment_status), by=first)
+            for (order, m) in sort!(collect(dict), by=first)
                 println(io, "\t\t\t", order, '\t', m)
             end
         end
@@ -461,10 +482,8 @@ function write_tree_fnas(
         for i in 1:N_SEGMENTS
             segment = Segment(i - 1)
             segment ∈ tree_segments || continue
-            dict = genotype.v[i]
-            dict === nothing && continue
-            v = sampleseq.seqs[i]
-            v === nothing && continue
+            dict = @unwrap_or genotype.v[i] continue
+            v = @unwrap_or sampleseq.seqs[i] continue
             for (order, seq) in v
                 maybe_match = dict[order]
                 maybe_match isa Match || continue
