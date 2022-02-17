@@ -177,7 +177,6 @@ checkpoint genotypes:
     params:
         juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/parse_blast.jl",
-        simple_genotypes=lambda wc: "simple.txt" if HOST == "swine" else "nothing",
         catconsdir="tmp/catcons", # corresponds to input.cons
         outconsdir="tmp/cattypes", # dir of output .fna files
         inconsdir="sequences", # we use this to load a list of sample names

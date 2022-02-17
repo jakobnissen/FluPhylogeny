@@ -31,7 +31,7 @@ imap(f) = x -> Iterators.map(f, x)
 struct GenoType
     name::String
     # nothing if the segment is not considered
-    v::SegmentTuple{Union{Clade, Nothing}}
+    v::SegmentTuple{Union{Nothing, Clade}}
 end
 
 struct Match
@@ -66,13 +66,17 @@ end
 
 struct SampleGenoType
     sample::Sample
-    # Top level nothing means no segment present. Bottom-level nothing means
-    # no match for the given segment. In the dict, the segments are ordered by
-    # their "order"
+    # Top level nothing means no segment present. The key of the dict is their
+    # "order" as assigned by consensus pipeline, to disambiguate between
+    # segcopies
     v::SegmentTuple{Union{Nothing, Dict{UInt8, Union{MatchFailure, Match}}}}
 end
 
-Base.isempty(s::SampleGenoType) = all(isnothing, s.v)
+function is_empty(s::SampleGenoType, relevant::SegmentTuple{Bool})
+    all(1:N_SEGMENTS) do i
+        s.v[i] === nothing || !relevant[i]
+    end
+end
 
 function has_nohits_segment(s::SampleGenoType)
     any(s.v) do i
@@ -270,6 +274,24 @@ function load_known_genotypes(path::AbstractString)::Vector{GenoType}
     return sort!(result, by=i -> i.name)
 end
 
+"Get a SegmentTuple of whether a segment is relevant for assigning genotype"
+function get_relevance(known_genotypes::Vector{GenoType})::SegmentTuple{Bool}
+    is_relevant = fill(false, N_SEGMENTS)
+    for genotype in known_genotypes
+        v = genotype.v
+        for i in 1:N_SEGMENTS
+            if v[i] !== nothing
+                is_relevant[i] = true
+            end
+        end
+    end
+    result = SegmentTuple(is_relevant)
+    if all(!, result)
+        error("No segment is relevant in known genotypes. Check reference genotypes.")
+    end
+    return result
+end
+
 # Categorize samples into empty, known genotypes, indetermine, and new
 function categorize_genotypes(
     sample_genotypes::Vector{SampleGenoType},
@@ -284,9 +306,12 @@ function categorize_genotypes(
 
     compatible_genotypes = GenoType[]
     matching_genotypes = GenoType[]
+
+    relevant_segments = get_relevance(known_genotypes)
+
     for sample_genotype in sample_genotypes
-        # Empty: No segments
-        if isempty(sample_genotype)
+        # Empty: All segments are either missing, or irrelevant for all genotypes.
+        if is_empty(sample_genotype, relevant_segments)
             push!(res_empty, sample_genotype)
             continue
         end
