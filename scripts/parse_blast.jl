@@ -411,7 +411,7 @@ function write_genotype_report(
         end
 
         # Print probable
-        if !isempty(res_precise)
+        if !isempty(res_unique)
             println(io, "Uniquely matching genotypes:")
             for (sample_genotype, genotype) in res_unique
                 println(io, '\t', sample_genotype.sample, '\t', genotype.name)
