@@ -176,13 +176,14 @@ function load_consensus(
             end
         end
     end
-    intermediate |> imap() do (sample, segment_orders)
+    result = intermediate |> imap() do (sample, segment_orders)
         tup = ntuple(N_SEGMENTS) do i
             v = segment_orders[i]
             isempty(v) ? none : some(v)
         end
         SampleSeqs(sample, tup)
     end |> collect
+    return sort!(result, by=i -> i.sample)
 end
 
 function load_sample_genotypes(
@@ -220,9 +221,10 @@ function load_sample_genotypes(
     end 
 
     # Convert to output type
-    intermediate |> imap() do (sample, st)
+    result = intermediate |> imap() do (sample, st)
         SampleGenoType(sample, st)
     end |> collect 
+    return sort!(result, by=i->i.sample)
 end
 
 # Pass in a vector that only contains one query
