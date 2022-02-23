@@ -11,28 +11,13 @@ using ErrorTypes: Option, none, some, is_error, unwrap, @unwrap_or
 using BioSequences: LongDNASeq
 using Printf: @sprintf
 using BlastParse: BlastParse
-
-const N_SEGMENTS = length(instances(Segment))
-const SegmentTuple{T} = NTuple{N_SEGMENTS, T}
+using Phylogeny
 
 parse_blast_io(::IO) = nothing # to please linter
 eval(BlastParse.gen_blastparse_code(
     (:qacc, :sacc, :qcovhsp, :pident, :bitscore),
     :parse_blast_io
 ))
-
-ifilter(f) = x -> Iterators.filter(f, x)
-imap(f) = x -> Iterators.map(f, x)
-
-# Random optimization thought:
-# If this ever bottlenecks, then enumerate all clades for each segment in 5 bits
-# Store the genotype in a single int.
-# Then use bitwise operations to compare genotypes
-struct GenoType
-    name::String
-    # none if the segment is not considered
-    v::SegmentTuple{Option{Clade}}
-end
 
 struct Match
     clade::Clade
@@ -129,24 +114,25 @@ end
 
 function main(
     genotype_report_path::AbstractString, # output: genotypes.txt
-    cattypes_dir::AbstractString, # output: dir to put {segment}_{clade}.fna
-    tree_segments_str::AbstractString, # comma-sep string of segments to
-        # write {segment}_{clade}.fna for
+    catgroups_dir::AbstractString, # output: dir to put {segment}_{clade}.fna
+    tree_groups_path::AbstractString, # path to tree_groups.txt
     known_genotypes_path::AbstractString, # input: genotypes.tsv ref input
     cat_dir::AbstractString, # input: dir w. concatenated consensus seqs
     cons_dir::AbstractString, # input: dir to read a list of sample names from
     blast_dir::AbstractString, # input: dir w. BLAST results
     minid::AbstractFloat
 )
-    isdir(cattypes_dir) || mkpath(cattypes_dir)
+    isdir(catgroups_dir) || mkpath(catgroups_dir)
     consensus = load_consensus(cat_dir, cons_dir)
     sample_genotypes = load_sample_genotypes(blast_dir, consensus, minid)
     known_genotypes = load_known_genotypes(known_genotypes_path)
     categories = categorize_genotypes(sample_genotypes, known_genotypes)
     write_genotype_report(genotype_report_path, categories...)
 
-    tree_segments = Set(map(i -> parse(Segment, i), split(strip(tree_segments_str), ',')))
-    write_tree_fnas(cattypes_dir, tree_segments, consensus, sample_genotypes)
+    tree_groups = open(tree_groups_path) do io
+        load_tree_groups(io, known_genotypes)
+    end
+    write_tree_fnas(catgroups_dir, tree_groups, consensus, sample_genotypes)
     return nothing
 end
 
@@ -255,25 +241,6 @@ function assign_clade(
     else
         match
     end
-end
-
-# Assumes format is .tsv
-function load_known_genotypes(path::AbstractString)::Vector{GenoType}
-    lines = eachline(path) |>
-        imap(strip) |>
-        ifilter(!isempty) |>
-        imap(x -> split(x, '\t')) |>
-        collect
-    segments = map(i -> parse(Segment, i), lines[1][2:end])
-    result = GenoType[]
-    for line in lines[2:end]
-        v = fill(none(Clade), N_SEGMENTS)
-        for (segment, f) in zip(segments, line[2:end])
-            v[Integer(segment) + 1] = some(Clade(f))
-        end
-        push!(result, GenoType(first(line), SegmentTuple(v)))
-    end
-    return sort!(result, by=i -> i.name)
 end
 
 "Get a SegmentTuple of whether a segment is relevant for assigning genotype"
@@ -472,33 +439,35 @@ function print_match_status(io::IO, s::SampleGenoType)
 end
 
 function write_tree_fnas(
-    cattypes_dir::AbstractString,
-    tree_segments::Set{Segment},
+    catgroups_dir::AbstractString,
+    tree_groups::Dict{Tuple{Segment, Clade}, Vector{String}},
     sampleseqs::Vector{SampleSeqs},
     sample_genotypes::Vector{SampleGenoType}
 )
     genotype_of_sample = Dict(g.sample => g for g in sample_genotypes)
-    by_segtype = Dict{Tuple{Segment, Clade}, Vector{FASTA.Record}}()
+    by_tree_group = Dict{Tuple{Segment, String}, Vector{FASTA.Record}}()
     for sampleseq in sampleseqs
         genotype = genotype_of_sample[sampleseq.sample]
         for i in 1:N_SEGMENTS
             segment = Segment(i - 1)
-            segment ∈ tree_segments || continue
             dict = @unwrap_or genotype.v[i] continue
             v = @unwrap_or sampleseq.seqs[i] continue
             for (order, seq) in v
                 maybe_match = dict[order]
                 maybe_match isa Match || continue
+                groups = get(tree_groups, (segment, maybe_match.clade), nothing)
+                groups === nothing && continue
                 header = string(sampleseq.sample) * '_' * string(order)
                 record = FASTA.Record(header, seq)
-                key = (segment, maybe_match.clade)
-                push!(get!(valtype(by_segtype), by_segtype, key), record)
+                for group in groups
+                    push!(get!(valtype(by_tree_group), by_tree_group, (segment, group)), record)
+                end
             end
         end
     end
 
-    for ((segment, clade), records) in by_segtype
-        path = joinpath(cattypes_dir, "$(segment)_$(clade).fna")
+    for ((segment, group), records) in by_tree_group
+        path = joinpath(catgroups_dir, "$(segment)_$(group).fna")
         open(FASTA.Writer, path) do writer
             foreach(rec -> write(writer, rec), records)
         end
@@ -510,7 +479,7 @@ if abspath(PROGRAM_FILE) == @__FILE__
     if length(ARGS) != 8
         println(
             "Usage: julia parse_blast.jl genotype_report_path " * 
-            "cattypes_dir tree_segments_str " *
+            "catgroups_dir tree_groups_path " *
             "known_genotypes_path cat_dir cons_dir blast_dir min_id"
         )
         exit(1)
