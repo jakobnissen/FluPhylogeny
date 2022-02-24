@@ -41,7 +41,7 @@ function load_tree_groups(
     known_genotypes::Vector{GenoType}
 # Map from (segment, clade) to list of all tree groups this clade is in
 )::Dict{Tuple{Segment, Clade}, Vector{String}}
-    tree_group_names = Set{String}()
+    tree_group_names = Dict(s => Set{String}() for s in instances(Segment))
     result = Dict{Tuple{Segment, Clade}, Vector{String}}()
     known_clades = Dict(s => Set{Clade}() for s in instances(Segment))
     for genotype in known_genotypes
@@ -63,10 +63,10 @@ function load_tree_groups(
         end
         segment = parse(Segment, fields[1])
         name = String(fields[2])
-        if in(tree_group_names, name)
-            error("Duplicate tree group name: \"$name\"")
+        if in(tree_group_names[segment], name)
+            error("Duplicate tree group name: \"$name\" in $segment")
         end
-        push!(tree_group_names, name)
+        push!(tree_group_names[segment], name)
         for segtype in split(fields[3], ',')
             clade = Clade(segtype)
             if !in(clade, known_clades[segment])

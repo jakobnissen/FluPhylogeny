@@ -36,25 +36,36 @@ function Base.print(io::IO, m::Match)
     print(io, m.clade, '\t', m.identifier, '\t', id)
 end
 
-@enum MatchFailure::UInt8 NoHits AmbiguousHits
-
-function Base.print(io::IO, m::MatchFailure)
-    s = if m == NoHits
-        "No match"
-    elseif m == AmbiguousHits
-        "Ambiguous BLAST hits"
-    else
-        error()
-    end
-    print(io, s)
+# Unable to determine clade. The groups here are all groups for all plausible hits.
+"Hits multiple possible clades. The groups are the groups of the top hit only, and
+there may be more than 2 plausible hits, but top 2 are stored"
+struct AmbiguousHit
+    # The top match may possibly not be in any groups
+    groups::Union{Nothing, Vector{String}}
+    first_match::Match
+    second_match::Match
 end
+
+function Base.print(io::IO, a::AmbiguousHit)
+    name1 = a.first_match.clade
+    name2 = a.second_match.clade
+    id1 = @sprintf "%.2f" (100 * a.first_match.identity)
+    id2 = @sprintf "%.2f" (100 * a.second_match.identity)
+    print(io, "Ambiguous: $(name1)/$(name2) $(id1)/$(id2) %")
+end
+
+# Nothing for no match.
+# AmbiguousHit means hits, but unable to determine which. The group is simply the
+# groups of the top hit.
+# Else match
+const MatchOptions = Union{Nothing, Match, AmbiguousHit}
 
 struct SampleGenoType
     sample::Sample
     # Top level none means no segment present. The key of the dict is their
     # "order" as assigned by consensus pipeline, to disambiguate between
     # segcopies
-    v::SegmentTuple{Option{Dict{UInt8, Union{MatchFailure, Match}}}}
+    v::SegmentTuple{Option{Dict{UInt8, MatchOptions}}}
 end
 
 function is_empty(s::SampleGenoType, relevant::SegmentTuple{Bool})
@@ -66,7 +77,7 @@ end
 function has_nohits_segment(s::SampleGenoType)
     any(s.v) do i
         d = @unwrap_or i return false
-        any(isequal(NoHits), values(d))
+        any(isequal(nothing), values(d))
     end
 end
 
@@ -93,18 +104,22 @@ function compatibility(sample::SampleGenoType, genotype::GenoType)::GenotypeMatc
 
         # If any matches hit or any match is ambiguous, it could match.
         any_could = false
-        for (_, maybe_match) in dict
-            if maybe_match isa Match
-                if maybe_match.clade == genotype_clade
+        for (_, option) in dict
+            if option === nothing
+                unique_match = false
+            elseif option isa Match
+                if option.clade == genotype_clade
                     any_could = true
                 else
                     unique_match = false
                 end
-            elseif maybe_match == NoHits
+            elseif option isa AmbiguousHit
                 unique_match = false
-            elseif maybe_match == AmbiguousHits
-                unique_match = false
+                # We don't know if there could be more viable hits than the
+                # listed top two, so we just say that it could be any clade
                 any_could = true
+            else
+                @assert false
             end
         end
         any_could || return NotMatching
@@ -124,14 +139,15 @@ function main(
 )
     isdir(catgroups_dir) || mkpath(catgroups_dir)
     consensus = load_consensus(cat_dir, cons_dir)
-    sample_genotypes = load_sample_genotypes(blast_dir, consensus, minid)
     known_genotypes = load_known_genotypes(known_genotypes_path)
-    categories = categorize_genotypes(sample_genotypes, known_genotypes)
-    write_genotype_report(genotype_report_path, categories...)
-
     tree_groups = open(tree_groups_path) do io
         load_tree_groups(io, known_genotypes)
     end
+    sample_genotypes = load_sample_genotypes(blast_dir, consensus, tree_groups, minid) 
+    categories = categorize_genotypes(sample_genotypes, known_genotypes)
+    write_genotype_report(genotype_report_path, categories...)
+
+
     write_tree_fnas(catgroups_dir, tree_groups, consensus, sample_genotypes)
     return nothing
 end
@@ -175,17 +191,17 @@ end
 function load_sample_genotypes(
     blast_dir::AbstractString,
     consensus::Vector{SampleSeqs},
+    tree_groups::Dict{Tuple{Segment, Clade}, Vector{String}},
     min_id::AbstractFloat,
 )::Vector{SampleGenoType}
     # Initialize with each present segment being set to no hits, since any segments
     # not present in the BLAST does indeed have no hits
-    dType = Dict{UInt8, Union{MatchFailure, Match}}
+    dType = Dict{UInt8, MatchOptions}
 
-    # TODO: Error in JET.jl: Try removing the "some": JET doesn't catch it!
     intermediate::Dict{Sample, SegmentTuple{Option{dType}}} = (consensus |> imap() do sampleseq
         tup::SegmentTuple{Option{dType}} = map(sampleseq.seqs) do maybe_segvector
             segvector = @unwrap_or maybe_segvector return none(dType)
-            some(dType(o => NoHits for (o, s) in segvector))
+            some(dType(o => nothing for (o, s) in segvector))
         end
         sampleseq.sample => tup
     end |> Dict)
@@ -202,7 +218,7 @@ function load_sample_genotypes(
         end
         for ((sample, order), rowvec) in byquery
             d = unwrap(intermediate[sample][Integer(segment) + 0x01])
-            d[order] = assign_clade(rowvec, min_id)
+            d[order] = assign_clade(segment, rowvec, tree_groups, min_id)
         end
     end 
 
@@ -215,31 +231,40 @@ end
 
 # Pass in a vector that only contains one query
 function assign_clade(
+    segment::Segment,
     v::Vector{<:NamedTuple},
+    tree_groups::Dict{Tuple{Segment, Clade}, Vector{String}},
     min_id::AbstractFloat
-)::Union{Match, MatchFailure}
+)::MatchOptions
     # If the match covers less than 80% of the query, it doesn't matter
     filter!(i -> i.qcovhsp ≥ 0.8, v)
+    isempty(v) && return nothing
 
     # It's a match if: Hit above minimum identity
     # and second-best clade hit is 3%-points and 50% further away 
     sort!(v, by=i -> i.bitscore, rev=true)
     best = first(v)
-    best.pident < min_id && return NoHits
+    best.pident < min_id && return nothing
+
     identifier, clade = split_clade(best.sacc)
     match = Match(clade, identifier, best.pident)
     next_clade_pos = findfirst(v) do row
         _, otherclade = split_clade(row.sacc)
         otherclade != clade
     end
+    # If no other clades hit, it's the top match
     next_clade_pos === nothing && return match
-    second_id = v[next_clade_pos].pident
-    return if (second_id + 0.03 > best.pident ||
-        (1 - second_id) < 1.5 * (1 - best.pident)
+    next_identifier, next_clade = split_clade(v[next_clade_pos].sacc)
+    next_match = Match(next_clade, next_identifier, v[next_clade_pos].pident)
+
+    # If the next clade is much further away, it's the top match
+    return if (next_match.identity + 0.03 < best.pident &&
+        (1 - next_match.identity) > 1.5 * (1 - best.pident)
     )
-        AmbiguousHits
-    else
         match
+    else
+        groups = get(tree_groups, (segment, match.clade), nothing)
+        AmbiguousHit(groups, match, next_match)
     end
 end
 
@@ -453,9 +478,16 @@ function write_tree_fnas(
             dict = @unwrap_or genotype.v[i] continue
             v = @unwrap_or sampleseq.seqs[i] continue
             for (order, seq) in v
-                maybe_match = dict[order]
-                maybe_match isa Match || continue
-                groups = get(tree_groups, (segment, maybe_match.clade), nothing)
+                match_option = dict[order]
+                groups = if match_option isa Match
+                    get(tree_groups, (segment, match_option.clade), nothing)
+                elseif match_option === nothing
+                    continue
+                elseif match_option isa AmbiguousHit
+                    match_option.groups
+                else
+                    @assert false
+                end
                 groups === nothing && continue
                 header = string(sampleseq.sample) * '_' * string(order)
                 record = FASTA.Record(header, seq)
