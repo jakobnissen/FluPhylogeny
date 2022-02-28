@@ -258,7 +258,7 @@ function assign_clade(
     next_match = Match(next_clade, next_identifier, v[next_clade_pos].pident)
 
     # If the next clade is much further away, it's the top match
-    return if (next_match.identity + 0.03 < best.pident &&
+    return if (next_match.identity + 0.02 < best.pident &&
         (1 - next_match.identity) > 1.5 * (1 - best.pident)
     )
         match

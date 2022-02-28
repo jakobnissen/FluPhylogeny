@@ -1,4 +1,3 @@
-# TODO: ADD TEMP DECLARATIONS TO INTERMEDIATE FILES
 # TODO: Better error message when given bad input paths
 # TODO: Root in PDF file??
 # TODO: Better quality PDF file - img size, colors etc.
@@ -129,7 +128,7 @@ rule makeblastdb:
 
 rule gather_cons:
     input: REFOUTDIR +  "/phylo_instantiated"
-    output: expand("tmp/catcons/{segment}.fna", segment=ALL_SEGMENTS)
+    output: temp(expand("tmp/catcons/{segment}.fna", segment=ALL_SEGMENTS))
     params:
         juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/gather_consensus.jl",
