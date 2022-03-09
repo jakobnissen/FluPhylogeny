@@ -22,7 +22,7 @@ function load_known_genotypes(path::AbstractString)::Vector{GenoType}
     lines = eachline(path) |>
         imap(strip) |>
         ifilter(!isempty) |>
-        imap(x -> split(x, '\t')) |>
+        imap(split) |>
         collect
     segments = map(i -> parse(Segment, i), lines[1][2:end])
     result = GenoType[]

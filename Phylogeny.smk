@@ -1,7 +1,3 @@
-# TODO: Better error message when given bad input paths
-# TODO: Root in PDF file??
-# TODO: Better quality PDF file - img size, colors etc.
-
 import os
 
 SNAKEDIR = os.path.dirname(workflow.snakefile)
