@@ -6,6 +6,20 @@ JULIA_COMMAND = f"JULIA_LOAD_PATH='{SNAKEDIR}' julia --startup-file=no"
 ###############
 # Parse config
 ###############
+KNOWN_CONFIGS = {'ref', 'host', 'consensus'}
+for key in config:
+    if key not in KNOWN_CONFIGS:
+        raise KeyError(
+            f"Config \"{key}\" is not a known Consensus pipeline config. "
+            "Check spelling. Known configs are: "
+            f"{','.join(KNOWN_CONFIGS)}"
+        )
+
+# Appalingly, Snakemake automatically converts input strings to int/float
+# if they are parseable as such. Convert them back to strings
+for (k, v) in config.items():
+    config[k] = str(v)
+
 # Get refdir
 if "ref" not in config:
     raise KeyError("You must supply reference directory: '--config ref=/path/to/ref'")
