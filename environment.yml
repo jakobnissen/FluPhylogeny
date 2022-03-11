@@ -1,6 +1,7 @@
 name: phylogeny
 channels:
   - bioconda
+  - conda-forge
   - defaults
 dependencies:
   - mafft=7.486
