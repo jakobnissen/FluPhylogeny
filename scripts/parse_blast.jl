@@ -143,10 +143,10 @@ function main(
     tree_groups = open(tree_groups_path) do io
         load_tree_groups(io, known_genotypes)
     end
-    sample_genotypes = load_sample_genotypes(blast_dir, consensus, tree_groups, minid) 
-    categories = categorize_genotypes(sample_genotypes, known_genotypes)
-    write_genotype_report(genotype_report_path, categories...)
-
+    sample_genotypes = load_sample_genotypes(blast_dir, consensus, tree_groups, minid)
+    relevance = get_relevance(known_genotypes)
+    categories = categorize_genotypes(sample_genotypes, known_genotypes, relevance)
+    write_genotype_report(genotype_report_path, relevance, categories...)
 
     write_tree_fnas(catgroups_dir, tree_groups, consensus, sample_genotypes)
     return nothing
@@ -289,7 +289,8 @@ end
 # Categorize samples into empty, known genotypes, indetermine, and new
 function categorize_genotypes(
     sample_genotypes::Vector{SampleGenoType},
-    known_genotypes::Vector{GenoType}
+    known_genotypes::Vector{GenoType},
+    relevant_segments::SegmentTuple{Bool}
 )::NTuple{5, Vector}
     res_empty = SampleGenoType[]
     res_precise = Tuple{SampleGenoType, GenoType}[]
@@ -301,8 +302,6 @@ function categorize_genotypes(
 
     compatible_genotypes = GenoType[]
     matching_genotypes = GenoType[]
-
-    relevant_segments = get_relevance(known_genotypes)
 
     for sample_genotype in sample_genotypes
         # Empty: All segments are either missing, or irrelevant for all genotypes.
@@ -376,6 +375,7 @@ end
 # Output: genotypes.txt
 function write_genotype_report(
     genotype_report_path::AbstractString,
+    relevance::SegmentTuple{Bool},
     res_empty::Vector{SampleGenoType},
     res_precise::Vector{Tuple{SampleGenoType, GenoType}},
     res_unique::Vector{Tuple{SampleGenoType, GenoType}},
@@ -409,7 +409,7 @@ function write_genotype_report(
             println(io, "Uniquely matching genotypes:")
             for (sample_genotype, genotype) in res_unique
                 println(io, '\t', sample_genotype.sample, '\t', genotype.name)
-                print_match_status(io, sample_genotype)
+                print_match_status(io, sample_genotype, relevance)
                 println(io)
             end
             println(io)
@@ -420,7 +420,7 @@ function write_genotype_report(
             println(io, "Indeterminate genotypes:")
             for (sample_genotype, genotypes) in res_indeterminate
                 println(io, '\t', sample_genotype.sample)
-                print_match_status(io, sample_genotype)
+                print_match_status(io, sample_genotype, relevance)
                 println(io)
                 for genotype in genotypes
                     println(io, "\t\tMatches\t", genotype.name)
@@ -435,7 +435,7 @@ function write_genotype_report(
             println(io, "New genotypes:")
             for sample_genotype in res_new
                 println(io, '\t', sample_genotype.sample)
-                print_match_status(io, sample_genotype)
+                print_match_status(io, sample_genotype, relevance)
                 println(io)
             end
             println(io)
@@ -443,8 +443,14 @@ function write_genotype_report(
     end
 end
 
-function print_match_status(io::IO, s::SampleGenoType)
-    for (i, segment_status) in enumerate(s.v)
+function print_match_status(
+    io::IO,
+    s::SampleGenoType,
+    relevance::SegmentTuple{Bool}
+)
+    @assert length(s.v) == length(relevance) == N_SEGMENTS
+    for (i, (segment_status, relevant)) in enumerate(zip(s.v, relevance))
+        relevant || continue
         segment = Segment(i - 1)
         print(io, "\t\t", segment)
         dict = @unwrap_or segment_status begin

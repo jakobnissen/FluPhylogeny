@@ -57,32 +57,6 @@ if not os.path.isdir(CONSENSUS_DIR):
 
 ALL_SEGMENTS = sorted(os.listdir(os.path.join(REFDIR, "segments")))
 
-""""
-# Check the validity of "genotypes.tsv": No clade which is not in ALL_SEGTYPES
-ALL_SEGTYPES = {s: [] for s in ALL_SEGMENTS}
-for segment in ALL_SEGMENTS:
-    for file in sorted(os.listdir(os.path.join(REFDIR, "segments", segment))):
-        ALL_SEGTYPES[segment].append(os.path.splitext(file)[0])
-
-with open(os.path.join(REFDIR, "genotypes.tsv")) as file:
-    header = next(file).strip()
-    if not header.startswith("genotype"):
-        raise ValueError("Expected header in genotypes.tsv reference file")
-    headerfields = header.split()
-
-    if set(headerfields[1:]) - {"genotype"} != set(ALL_SEGMENTS):
-        raise KeyError("Segments in genotypes.tsv do not match reference segments")
-
-    for line in filter(None, map(str.strip, file)):
-        fields = line.split()
-        if len(fields) != len(ALL_SEGMENTS) + 1:
-            raise ValueError("Not all rows in genotypes.tsv has same number of columns")
-
-        for (segment, clade) in zip(headerfields[1:], fields[1:]):
-            if clade not in ALL_SEGTYPES[segment]:
-                raise KeyError(f"Clade {clade}, segment {segment} in genotypes.tsv has no reference")
-"""
-
 ###########################
 # This is the function that triggers the checkpoint. By accessing the blastout
 # checkpoint, the DAG "short-circuits" all the middle rules until the file
