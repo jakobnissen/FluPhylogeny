@@ -170,7 +170,7 @@ function load_consensus(
                 sample, order = let
                     h = FASTA.header(record)
                     h === nothing ? error("No header in record in $file") : Sample(h)
-                    s, o = rsplit(h, '_')
+                    s, o = rsplit(h, '_', limit=2)
                     (Sample(s), parse(UInt8, o))
                 end
                 seq = FASTA.sequence(LongDNASeq, record)
