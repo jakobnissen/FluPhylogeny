@@ -160,7 +160,7 @@ function load_consensus(
     intermediate = Dict(
         Sample(s) => 
         [Tuple{UInt8, LongDNASeq}[] for i in 1:N_SEGMENTS]
-        for s in readdir(samples_dir)
+        for s in filter!(i -> !startswith(i, '.'), readdir(samples_dir))
     )
     for file in readdir(cons_dir, join=true)
         segment = parse(Segment, basename(first(splitext(file))))
@@ -208,7 +208,9 @@ function load_sample_genotypes(
 
     # Now read blast and set the matched segments to clades
     for file in readdir(blast_dir, join=true)
-        segment = parse(Segment, basename(first(splitext(file))))
+        bname = basename(first(splitext(file)))
+        startswith(bname, '.') && continue
+        segment = parse(Segment, bname)
         rows = open(parse_blast_io, file)
         byquery = Dict{Tuple{Sample, UInt8}, typeof(rows)}()
         for row in rows

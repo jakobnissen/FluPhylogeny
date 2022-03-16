@@ -27,7 +27,7 @@ function main(
     phylodir::AbstractString, # simply a dir with a list of segments
     consdir::AbstractString
 )
-    segments = map(readdir(phylodir)) do entry
+    segments = map(filter!(i -> !startswith(i, '.'), readdir(phylodir))) do entry
         parse(Segment, entry)
     end |> Set
 
@@ -50,7 +50,7 @@ end
 
 function load_consensus(dir::AbstractString)::Vector{Seq}
     result = Seq[]
-    for _sample in readdir(dir)
+    for _sample in filter!(i -> !startswith(i, '.'), readdir(dir))
         sample = Sample(_sample)
         append!(result, load_primary(joinpath(dir, _sample, "primary.fna"), sample))
         secondary_path = joinpath(dir, _sample, "secondary.fna")

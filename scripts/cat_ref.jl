@@ -40,10 +40,10 @@ function load_segtypes(
     end
 
     record = FASTA.Record()
-    for subdir in readdir(refdir)
+    for subdir in filter!(i -> !startswith(i, '.'), readdir(refdir))
         segment = parse(Segment, subdir)
         joindir = joinpath(refdir, subdir)
-        for file in readdir(joindir)
+        for file in filter!(i -> !startswith(i, '.'), readdir(joindir))
             m = match(r"^([A-Za-z0-9]+)\.fna$", file)
             if m === nothing
                 error(
