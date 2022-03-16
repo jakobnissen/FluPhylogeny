@@ -6,7 +6,7 @@ JULIA_COMMAND = f"JULIA_LOAD_PATH='{SNAKEDIR}' julia --startup-file=no"
 ###############
 # Parse config
 ###############
-KNOWN_CONFIGS = {'ref', 'host', 'consensus'}
+KNOWN_CONFIGS = {'ref', 'host', 'consensus', 'phylocons'}
 for key in config:
     if key not in KNOWN_CONFIGS:
         raise KeyError(
@@ -48,10 +48,18 @@ REFDIR = os.path.join(TOP_REF_DIR, HOST)
 REFOUTDIR = os.path.join(os.path.dirname(TOP_REF_DIR), "refout", "phylo", HOST)
 
 # Get consensus dir
-if "consensus" not in config:
-    raise KeyError("You must supply consensus directory: '--config consensus=/path/to/consensus'")
+PHYLOCONS = "phylocons" in config
+if not (PHYLOCONS ^ ("consensus" in config)):
+    raise KeyError(
+        "You must supply either \"consensus\" config or \"phylocons\" config: "
+        "'--config consensus=/path/to/consensus'"
+    )
 
-CONSENSUS_DIR = os.path.abspath(os.path.expanduser(config["consensus"]))
+if PHYLOCONS:
+    CONSENSUS_DIR = os.path.abspath(os.path.expanduser(config["phylocons"]))
+else:
+    CONSENSUS_DIR = os.path.abspath(os.path.expanduser(config["consensus"]))
+
 if not os.path.isdir(CONSENSUS_DIR):
     raise NotADirectoryError(CONSENSUS_DIR)
 
@@ -117,8 +125,9 @@ rule gather_cons:
         juliacmd=JULIA_COMMAND,
         scriptpath=f"{SNAKEDIR}/scripts/gather_consensus.jl",
         segment_dir=os.path.join(REFDIR, "segments"),
-        consensus_dir=CONSENSUS_DIR
-    shell: "{params.juliacmd} {params.scriptpath:q} tmp/catcons {params.segment_dir:q} {params.consensus_dir:q}"
+        consensus_dir=CONSENSUS_DIR,
+        phylocons=str(PHYLOCONS).lower()
+    shell: "{params.juliacmd} {params.scriptpath:q} tmp/catcons {params.segment_dir:q} {params.consensus_dir:q} {params.phylocons}"
 
 rule blastn:
     input:
@@ -151,12 +160,13 @@ checkpoint genotypes:
         blastdir="tmp/blast", # corresponds to input.blast
         tree_groups=os.path.join(REFDIR, "tree_groups.txt"),
         known_genotypes=os.path.join(REFDIR, "genotypes.tsv"),
-        minid=MINIMUM_IDENTITY
+        minid=MINIMUM_IDENTITY,
+        phylocons=str(PHYLOCONS).lower()
     shell:
         "{params.juliacmd} {params.scriptpath:q} "
         "{output.genotypes} {params.outconsdir} "
         "{params.tree_groups:q} {params.known_genotypes:q} {params.catconsdir} "
-        "{params.inconsdir} {params.blastdir} {params.minid}"
+        "{params.inconsdir} {params.blastdir} {params.minid} {params.phylocons}"
 
 ##################
 # After checkpoint

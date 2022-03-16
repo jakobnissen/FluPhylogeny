@@ -64,8 +64,8 @@ struct SampleGenoType
     sample::Sample
     # Top level none means no segment present. The key of the dict is their
     # "order" as assigned by consensus pipeline, to disambiguate between
-    # segcopies
-    v::SegmentTuple{Option{Dict{UInt8, MatchOptions}}}
+    # segcopies. Bool for whether it passed.
+    v::SegmentTuple{Option{Dict{UInt8, Tuple{Bool, MatchOptions}}}}
 end
 
 function is_empty(s::SampleGenoType, relevant::SegmentTuple{Bool})
@@ -84,7 +84,7 @@ end
 struct SampleSeqs
     sample::Sample
     # either missing segments, or any number of (order, seq)
-    seqs::SegmentTuple{Option{Vector{Tuple{UInt8, LongDNASeq}}}}
+    seqs::SegmentTuple{Option{Vector{Tuple{UInt8, Bool, LongDNASeq}}}}
 end
 
 @enum GenotypeMatch::UInt8 NotMatching CouldMatch UniqueMatch
@@ -104,7 +104,7 @@ function compatibility(sample::SampleGenoType, genotype::GenoType)::GenotypeMatc
 
         # If any matches hit or any match is ambiguous, it could match.
         any_could = false
-        for (_, option) in dict
+        for (_, (passed, option)) in dict
             if option === nothing
                 unique_match = false
             elseif option isa Match
@@ -134,11 +134,14 @@ function main(
     known_genotypes_path::AbstractString, # input: genotypes.tsv ref input
     cat_dir::AbstractString, # input: dir w. concatenated consensus seqs
     cons_dir::AbstractString, # input: dir to read a list of sample names from
+    # we use the consensus, which can be either phylocons or sequences dir.
     blast_dir::AbstractString, # input: dir w. BLAST results
-    minid::AbstractFloat
+    minid::AbstractFloat,
+    phylocons::Bool
 )
     isdir(catgroups_dir) || mkpath(catgroups_dir)
-    consensus = load_consensus(cat_dir, cons_dir)
+    samples = load_samples(cons_dir, phylocons)
+    consensus = load_consensus(cat_dir, samples)
     known_genotypes = load_known_genotypes(known_genotypes_path)
     tree_groups = open(tree_groups_path) do io
         load_tree_groups(io, known_genotypes)
@@ -152,29 +155,48 @@ function main(
     return nothing
 end
 
+function load_samples(dir::AbstractString, phylocons::Bool)::Vector{Sample}
+    files = filter!(i -> !startswith(i, '.'), readdir(dir))
+    return if phylocons
+        map(files) do filename
+            Sample(filename[1:prevind(filename, ncodeunits(filename) - 3)])
+        end
+    else
+        map(Sample, files)
+    end
+end
+
 function load_consensus(
     cons_dir::AbstractString, # dir of {segment}.fna
-    samples_dir::AbstractString # any dir to read samples from
+    samples::Vector{Sample}
 )::Vector{SampleSeqs}
     record = FASTA.Record()
     intermediate = Dict(
-        Sample(s) => 
-        [Tuple{UInt8, LongDNASeq}[] for i in 1:N_SEGMENTS]
-        for s in filter!(i -> !startswith(i, '.'), readdir(samples_dir))
+        s => [Tuple{UInt8, Bool, LongDNASeq}[] for i in 1:N_SEGMENTS] for s in samples
     )
     for file in readdir(cons_dir, join=true)
         segment = parse(Segment, basename(first(splitext(file))))
         open(FASTA.Reader, file) do reader
             while !eof(reader)
                 read!(reader, record)
-                sample, order = let
+                sample, order, passed = let
                     h = FASTA.header(record)
                     h === nothing ? error("No header in record in $file") : Sample(h)
-                    s, o = rsplit(h, '_', limit=2)
-                    (Sample(s), parse(UInt8, o))
+                    m = match(r"^(.*?)_(\d+)_([PF])$", h)
+                    if m === nothing
+                        error(
+                            "Header \"$h\" does not fit pattern " *
+                            "^(.*?)_(\\d+)_([PF])\$ i.e. NAME_ORDER_[PF]"
+                        )
+                    end
+                    (
+                        Sample(something(m.captures[1])),
+                        parse(UInt8, something(m.captures[2])),
+                        first(something(m.captures[3])) == 'P'
+                    )
                 end
                 seq = FASTA.sequence(LongDNASeq, record)
-                push!(intermediate[sample][Integer(segment) + 1], (order, seq))
+                push!(intermediate[sample][Integer(segment) + 1], (order, passed, seq))
             end
         end
     end
@@ -196,12 +218,12 @@ function load_sample_genotypes(
 )::Vector{SampleGenoType}
     # Initialize with each present segment being set to no hits, since any segments
     # not present in the BLAST does indeed have no hits
-    dType = Dict{UInt8, MatchOptions}
+    dType = Dict{UInt8, Tuple{Bool, MatchOptions}}
 
     intermediate::Dict{Sample, SegmentTuple{Option{dType}}} = (consensus |> imap() do sampleseq
         tup::SegmentTuple{Option{dType}} = map(sampleseq.seqs) do maybe_segvector
             segvector = @unwrap_or maybe_segvector return none(dType)
-            some(dType(o => nothing for (o, s) in segvector))
+            some(dType(o => (p, nothing) for (o, p, s) in segvector))
         end
         sampleseq.sample => tup
     end |> Dict)
@@ -214,13 +236,14 @@ function load_sample_genotypes(
         rows = open(parse_blast_io, file)
         byquery = Dict{Tuple{Sample, UInt8}, typeof(rows)}()
         for row in rows
-            s, o = rsplit(row.qacc, '_', limit=2)
+            s, o, _ = rsplit(row.qacc, '_', limit=3)
             sample, order = (Sample(s), parse(UInt8, o))
             push!(get!(valtype(byquery), byquery, (sample, order)), row)
         end
         for ((sample, order), rowvec) in byquery
             d = unwrap(intermediate[sample][Integer(segment) + 0x01])
-            d[order] = assign_clade(segment, rowvec, tree_groups, min_id)
+            passed = d[order][1]
+            d[order] = (passed, assign_clade(segment, rowvec, tree_groups, min_id))
         end
     end 
 
@@ -458,14 +481,14 @@ function print_match_status(
         dict = @unwrap_or segment_status begin
             println(io, "\tNo segment")
             continue
-        end 
+        end
         if length(dict) == 1
-            m = only(values(dict))
-            println(io, '\t', string(m))
+            (passed, match) = only(values(dict))
+            println(io, '\t', passed ? 'P' : 'F', ' ', match)
         else
             println(io)
-            for (order, m) in sort!(collect(dict), by=first)
-                println(io, "\t\t\t", order, '\t', m)
+            for (order, (passed, match)) in sort!(collect(dict), by=first)
+                println(io, "\t\t\t", order, '\t', passed ? 'P' : 'F', ' ', match)
             end
         end
     end
@@ -485,8 +508,8 @@ function write_tree_fnas(
             segment = Segment(i - 1)
             dict = @unwrap_or genotype.v[i] continue
             v = @unwrap_or sampleseq.seqs[i] continue
-            for (order, seq) in v
-                match_option = dict[order]
+            for (order, passed, seq) in v
+                _, match_option = dict[order]
                 groups = if match_option isa Match
                     get(tree_groups, (segment, match_option.clade), nothing)
                 elseif match_option === nothing
@@ -516,11 +539,11 @@ function write_tree_fnas(
 end 
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    if length(ARGS) != 8
+    if length(ARGS) != 9
         println(
             "Usage: julia parse_blast.jl genotype_report_path " * 
             "catgroups_dir tree_groups_path " *
-            "known_genotypes_path cat_dir cons_dir blast_dir min_id"
+            "known_genotypes_path cat_dir cons_dir blast_dir min_id is_phylocons"
         )
         exit(1)
     else
@@ -528,7 +551,8 @@ if abspath(PROGRAM_FILE) == @__FILE__
         if !isfinite(minid) || minid < 0 || minid > 1
             error("Minimum ID must be in 0..1")
         end
-        main(ARGS[1:7]..., minid)
+        phylocons = parse(Bool, ARGS[9])
+        main(ARGS[1:7]..., minid, phylocons)
     end
 end
 
