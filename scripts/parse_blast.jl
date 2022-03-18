@@ -142,6 +142,7 @@ end
 function main(
     genotype_report_path::AbstractString, # output: genotypes.txt
     catgroups_dir::AbstractString, # output: dir to put {segment}_{clade}.fna
+    jls_path::AbstractString, # output: where to put gzipped jls
     tree_groups_path::AbstractString, # path to tree_groups.txt
     known_genotypes_path::AbstractString, # input: genotypes.tsv ref input
     cat_dir::AbstractString, # input: dir w. concatenated consensus seqs
@@ -158,6 +159,9 @@ function main(
     sample_genotypes = load_sample_genotypes(blast_dir, consensus, tree_groups, minid)
     relevance = get_relevance(known_genotypes)
     categories = categorize_genotypes(sample_genotypes, known_genotypes, relevance)
+    open(GzipCompressorStream, jls_path, "w") do io
+        serialize(io, categories)
+    end
     write_genotype_report(genotype_report_path, relevance, categories)
 
     write_tree_fnas(catgroups_dir, tree_groups, consensus, sample_genotypes)
@@ -525,19 +529,19 @@ function write_tree_fnas(
 end 
 
 if abspath(PROGRAM_FILE) == @__FILE__
-    if length(ARGS) != 8
+    if length(ARGS) != 9
         println(
             "Usage: julia parse_blast.jl genotype_report_path " * 
-            "catgroups_dir tree_groups_path " *
+            "catgroups_dir jls_path tree_groups_path " *
             "known_genotypes_path cat_dir cons_dir blast_dir min_id"
         )
         exit(1)
     else
-        minid = parse(Float64, ARGS[8])
+        minid = parse(Float64, ARGS[9])
         if !isfinite(minid) || minid < 0 || minid > 1
             error("Minimum ID must be in 0..1")
         end
-        main(ARGS[1:7]..., minid)
+        main(ARGS[1:8]..., minid)
     end
 end
 

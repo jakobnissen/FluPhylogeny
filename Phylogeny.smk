@@ -147,6 +147,7 @@ checkpoint genotypes:
         scriptpath=f"{SNAKEDIR}/scripts/parse_blast.jl",
         catconsdir="tmp/catcons", # corresponds to input.cons
         outconsdir="tmp/catgroups", # dir of output .fna files
+        jlspath="tmp/genotypes.jls.gz", # path of internal genotypes object
         inconsdir=CONSENSUS_DIR, # we use this to load a list of sample names
         blastdir="tmp/blast", # corresponds to input.blast
         tree_groups=os.path.join(REFDIR, "tree_groups.txt"),
@@ -154,7 +155,7 @@ checkpoint genotypes:
         minid=MINIMUM_IDENTITY
     shell:
         "{params.juliacmd} {params.scriptpath:q} "
-        "{output.genotypes} {params.outconsdir} "
+        "{output.genotypes} {params.outconsdir} {params.jlspath} "
         "{params.tree_groups:q} {params.known_genotypes:q} {params.catconsdir} "
         "{params.inconsdir} {params.blastdir} {params.minid}"
 
