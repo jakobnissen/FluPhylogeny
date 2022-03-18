@@ -11,6 +11,9 @@ using ErrorTypes: Option, none, some, is_error, unwrap, @unwrap_or
 using BioSequences: LongDNASeq
 using Printf: @sprintf
 using BlastParse: BlastParse
+using Serialization: serialize
+using CodecZlib: GzipCompressorStream
+
 using Phylogeny
 
 parse_blast_io(::IO) = nothing # to please linter
@@ -127,6 +130,15 @@ function compatibility(sample::SampleGenoType, genotype::GenoType)::GenotypeMatc
     return unique_match ? UniqueMatch : CouldMatch
 end
 
+# The 5 categories we assign samples to
+struct AssignmentCategories
+    res_empty::Vector{SampleGenoType}
+    res_precise::Vector{Tuple{SampleGenoType, GenoType}}
+    res_unique::Vector{Tuple{SampleGenoType, GenoType}}
+    res_indeterminate::Vector{Tuple{SampleGenoType, Vector{GenoType}}}
+    res_new::Vector{SampleGenoType}
+end
+
 function main(
     genotype_report_path::AbstractString, # output: genotypes.txt
     catgroups_dir::AbstractString, # output: dir to put {segment}_{clade}.fna
@@ -146,7 +158,7 @@ function main(
     sample_genotypes = load_sample_genotypes(blast_dir, consensus, tree_groups, minid)
     relevance = get_relevance(known_genotypes)
     categories = categorize_genotypes(sample_genotypes, known_genotypes, relevance)
-    write_genotype_report(genotype_report_path, relevance, categories...)
+    write_genotype_report(genotype_report_path, relevance, categories)
 
     write_tree_fnas(catgroups_dir, tree_groups, consensus, sample_genotypes)
     return nothing
@@ -293,7 +305,7 @@ function categorize_genotypes(
     sample_genotypes::Vector{SampleGenoType},
     known_genotypes::Vector{GenoType},
     relevant_segments::SegmentTuple{Bool}
-)::NTuple{5, Vector}
+)::AssignmentCategories
     res_empty = SampleGenoType[]
     res_precise = Tuple{SampleGenoType, GenoType}[]
     # Not perfectly matching, but only one possibility of the known genotype
@@ -371,45 +383,42 @@ function categorize_genotypes(
         # Else it's unknown
         push!(res_indeterminate, (sample_genotype, copy(compatible_genotypes)))
     end
-    return (res_empty, res_precise, res_unique, res_indeterminate, res_new)
+    return AssignmentCategories(res_empty, res_precise, res_unique, res_indeterminate, res_new)
 end
 
 # Output: genotypes.txt
 function write_genotype_report(
     genotype_report_path::AbstractString,
     relevance::SegmentTuple{Bool},
-    res_empty::Vector{SampleGenoType},
-    res_precise::Vector{Tuple{SampleGenoType, GenoType}},
-    res_unique::Vector{Tuple{SampleGenoType, GenoType}},
-    res_indeterminate::Vector{Tuple{SampleGenoType, Vector{GenoType}}},
-    res_new::Vector{SampleGenoType}
+    categories::AssignmentCategories
 )
-    if !isempty(res_new)
+
+    if !isempty(categories.res_new)
         @warn "Possible new genotype detected, see genotypes.txt report"
     end
     open(genotype_report_path, "w") do io
         # Print empty
-        if !isempty(res_empty)
+        if !isempty(categories.res_empty)
             println(io, "Empty samples:")
-            for sample_genotype in res_empty
+            for sample_genotype in categories.res_empty
                 println(io, '\t', sample_genotype.sample)
             end
             println(io)
         end
 
         # Print known
-        if !isempty(res_precise)
+        if !isempty(categories.res_precise)
             println(io, "Precise genotypes:")
-            for (sample_genotype, genotype) in res_precise
+            for (sample_genotype, genotype) in categories.res_precise
                 println(io, '\t', sample_genotype.sample, '\t', genotype.name)
             end
             println(io)
         end
 
         # Print probable
-        if !isempty(res_unique)
+        if !isempty(categories.res_unique)
             println(io, "Uniquely matching genotypes:")
-            for (sample_genotype, genotype) in res_unique
+            for (sample_genotype, genotype) in categories.res_unique
                 println(io, '\t', sample_genotype.sample, '\t', genotype.name)
                 print_match_status(io, sample_genotype, relevance)
                 println(io)
@@ -418,9 +427,9 @@ function write_genotype_report(
         end
 
         # Print unknown
-        if !isempty(res_indeterminate)
+        if !isempty(categories.res_indeterminate)
             println(io, "Indeterminate genotypes:")
-            for (sample_genotype, genotypes) in res_indeterminate
+            for (sample_genotype, genotypes) in categories.res_indeterminate
                 println(io, '\t', sample_genotype.sample)
                 print_match_status(io, sample_genotype, relevance)
                 println(io)
@@ -433,9 +442,9 @@ function write_genotype_report(
         end
 
         # Print new
-        if !isempty(res_new)
+        if !isempty(categories.res_new)
             println(io, "New genotypes:")
-            for sample_genotype in res_new
+            for sample_genotype in categories.res_new
                 println(io, '\t', sample_genotype.sample)
                 print_match_status(io, sample_genotype, relevance)
                 println(io)
