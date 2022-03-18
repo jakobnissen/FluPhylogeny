@@ -254,8 +254,8 @@ function assign_clade(
     tree_groups::Dict{Tuple{Segment, Clade}, Vector{String}},
     min_id::AbstractFloat
 )::MatchOptions
-    # If the match covers less than 80% of the query, it doesn't matter
-    filter!(i -> i.qcovhsp ≥ 0.8, v)
+    # If the match covers less than 75% of the query, it doesn't matter
+    filter!(i -> i.qcovhsp ≥ 0.75, v)
     isempty(v) && return nothing
 
     # It's a match if: Hit above minimum identity
