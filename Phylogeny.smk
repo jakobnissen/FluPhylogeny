@@ -174,20 +174,20 @@ checkpoint genotypes:
 ##################
 rule aln_groups:
     input: REFOUTDIR + "/groups/{segment}/{group}.fna"
-    output: REFOUTDIR + "/tmp/aln_groups/{segment}_{group}.aln.fna"
+    output: REFOUTDIR + "/tmp/aln_groups/{segment,[A-Z0-9]+}_{group}.aln.fna"
     log: "tmp/log/aln_groups/{segment}_{group}.aln.log"
     shell: "mafft {input:q} > {output} 2> {log}"
 
 rule trim_groups:
     input: rules.aln_groups.output
     output: REFOUTDIR + "/groups/{segment}_{group}.aln.trim.fna"
-    log: "tmp/log/aln_groups/{segment}_{group}.trim.log"
+    log: "tmp/log/aln_groups/{segment,[A-Z0-9]+}_{group}.trim.log"
     shell: "trimal -in {input} -out {output:q} -gt 0.9 -cons 60 2> {log}"
 
 rule guide_tree:
     input: rules.trim_groups.output
     output: REFOUTDIR + "/group_trees/{segment}_{group}.treefile"
-    log: "tmp/log/guide/{segment}_{group}.log"
+    log: "tmp/log/guide/{segment,[A-Z0-9]+}_{group}.log"
     threads: 2
     params: REFOUTDIR + "/group_trees/{segment}_{group}"
     shell: "iqtree -s {input:q} -pre {params:q} -T {threads} -m HKY+G2 --redo > {log}"
@@ -196,7 +196,7 @@ rule align_to_ref:
     input:
         ref=rules.trim_groups.output,
         con="tmp/catgroups/{segment}_{group}.fna"
-    output: "tmp/merge/{segment}_{group}.aln.fna"
+    output: "tmp/merge/{segment,[A-Z0-9]+}_{group}.aln.fna"
     log: "tmp/log/merge/{segment}_{group}.log"
     shell: "mafft --add {input.con} --keeplength {input.ref:q} > {output} 2> {log}"
 
@@ -204,7 +204,7 @@ rule iqtree:
     input:
         aln=rules.align_to_ref.output,
         guide=rules.guide_tree.output
-    output: "tmp/iqtree/{segment}_{group}.treefile"
+    output: "tmp/iqtree/{segment,[A-Z0-9]+}_{group}.treefile"
     log: "tmp/log/iqtree/{segment}_{group}.log"
     threads: 2
     params: "tmp/iqtree/{segment}_{group}"
@@ -214,7 +214,7 @@ rule iqtree:
 
 rule move_iqtree:
     input: rules.iqtree.output
-    output: "trees/{segment}/{group}.treefile"
+    output: "trees/{segment,[A-Z0-9]+}/{group}.treefile"
     shell: "cp {input} {output}"
 
 rule plot_tree:
