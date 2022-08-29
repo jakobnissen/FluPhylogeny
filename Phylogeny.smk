@@ -3,6 +3,9 @@ import os
 SNAKEDIR = os.path.dirname(workflow.snakefile)
 JULIA_COMMAND = f"JULIA_LOAD_PATH='{SNAKEDIR}' julia --startup-file=no"
 
+def list_dir(path):
+    return list(filter(lambda x: x != ".DS_Store", os.listdir(path)))
+
 ###############
 # Parse config
 ###############
@@ -34,7 +37,7 @@ if "host" not in config:
 HOST = config["host"]
 
 # Check refdir has a host subdir
-possible_hosts = set(os.listdir(TOP_REF_DIR))
+possible_hosts = set(list_dir(TOP_REF_DIR))
 if HOST not in possible_hosts:
     raise KeyError(f"Directory for host {HOST} not found in {TOP_REF_DIR}")
 
@@ -63,7 +66,7 @@ else:
 if not os.path.isdir(CONSENSUS_DIR):
     raise NotADirectoryError(CONSENSUS_DIR)
 
-ALL_SEGMENTS = sorted(os.listdir(os.path.join(REFDIR, "segments")))
+ALL_SEGMENTS = sorted(list_dir(os.path.join(REFDIR, "segments")))
 
 ###########################
 # This is the function that triggers the checkpoint. By accessing the blastout
@@ -73,7 +76,7 @@ def all_inputs(wildcards):
     # This is the function that gets all the segment/type combinations into the DAG
     trigger = checkpoints.genotypes.get()
     files = ["genotypes.txt"]
-    groups = [p[:-4].partition('_') for p in os.listdir("tmp/catgroups")]
+    groups = [p[:-4].partition('_') for p in list_dir("tmp/catgroups")]
     files.extend([f"trees/{s}/{g}.pdf" for (s, _, g) in groups])
     return files
 
