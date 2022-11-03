@@ -219,7 +219,7 @@ function load_consensus(
     result = intermediate |> imap() do (sample, segment_orders)
         tup = ntuple(N_SEGMENTS) do i
             v = segment_orders[i]
-            isempty(v) ? none : some(v)
+            isempty(v) ? none(typeof(v)) : some(v)
         end
         SampleSeqs(sample, tup)
     end |> collect
