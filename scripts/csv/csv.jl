@@ -8,7 +8,7 @@ function main(
     ngs_string::AbstractString,
     internal_path::AbstractString,
     genotype_path::AbstractString,
-    outpath::AbstractString
+    outpath::AbstractString,
 )
     parent = dirname(rstrip(rstrip(outpath, '/'), '\\'))
     (isempty(parent) || isdir(parent)) || error("Parent directory of output does not exist")

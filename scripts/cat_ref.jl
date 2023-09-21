@@ -12,7 +12,7 @@ using ErrorTypes: @unwrap_or
 function main(
     refdir::AbstractString,
     known_genotypes_path::AbstractString,
-    refoutdir::AbstractString
+    refoutdir::AbstractString,
 )
     known_genotypes = load_known_genotypes(known_genotypes_path)
     tree_groups = open(joinpath(refdir, "tree_groups.txt")) do io
@@ -28,7 +28,7 @@ end
 
 function load_segtypes(
     refdir::AbstractString,
-    known_genotypes::Vector{GenoType}
+    known_genotypes::Vector{GenoType},
 )::Dict{Segment, Dict{Clade, Vector{FASTA.Record}}}
     known_clades = Dict(s => Set{Clade}() for s in instances(Segment))
     result = Dict{Segment, Dict{Clade, Vector{FASTA.Record}}}()
@@ -48,7 +48,7 @@ function load_segtypes(
             if m === nothing
                 error(
                     "In dir \"$joindir\", file \"$file\" does not conform to " *
-                    "regex ^([A-Za-z0-9]+)\\.fna\$"
+                    "regex ^([A-Za-z0-9]+)\\.fna\$",
                 )
             end
             clade = Clade(m[1]::AbstractString)
@@ -58,14 +58,24 @@ function load_segtypes(
                 while !eof(reader)
                     read!(reader, record)
                     if FASTA.hasdescription(record)
-                        error("In file $file, FASTA record \"$(FASTA.header(record))\" contains whitespace")
+                        error(
+                            "In file $file, FASTA record \"$(FASTA.header(record))\" contains whitespace",
+                        )
                     end
                     id = FASTA.identifier(record)::String
                     if in(id, names)
-                        error("In file $file, FASTA record \"$(FASTA.identifier(record))\" is not unique")
+                        error(
+                            "In file $file, FASTA record \"$(FASTA.identifier(record))\" is not unique",
+                        )
                     end
                     push!(names, id)
-                    push!(records, FASTA.Record(id * "_" * string(clade), FASTA.sequence(LongDNASeq, record)))
+                    push!(
+                        records,
+                        FASTA.Record(
+                            id * "_" * string(clade),
+                            FASTA.sequence(LongDNASeq, record),
+                        ),
+                    )
                 end
                 records
             end
@@ -77,7 +87,7 @@ end
 "Just dump a concatenation of all segtypes within a segment"
 function dump_cat(
     outdir::AbstractString,
-    segtypes::Dict{Segment, Dict{Clade, Vector{FASTA.Record}}}
+    segtypes::Dict{Segment, Dict{Clade, Vector{FASTA.Record}}},
 )::Nothing
     isdir(outdir) || mkdir(outdir)
     for (segment, d) in segtypes
@@ -92,11 +102,14 @@ end
 function dump_groups(
     outdir::AbstractString,
     segtypes::Dict{Segment, Dict{Clade, Vector{FASTA.Record}}},
-    tree_groups::Dict{Tuple{Segment, Clade}, Vector{String}}
+    tree_groups::Dict{Tuple{Segment, Clade}, Vector{String}},
 )::Nothing
     by_group = Dict{Tuple{Segment, String}, Vector{FASTA.Record}}()
     for ((segment, clade), groups) in tree_groups, group in groups
-        append!(get!(valtype(by_group), by_group, (segment, group)), segtypes[segment][clade])
+        append!(
+            get!(valtype(by_group), by_group, (segment, group)),
+            segtypes[segment][clade],
+        )
     end
 
     isdir(outdir) || mkdir(outdir)
@@ -122,4 +135,3 @@ if abspath(PROGRAM_FILE) == @__FILE__
 end
 
 end # module
-

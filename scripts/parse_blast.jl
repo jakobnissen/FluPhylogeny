@@ -17,10 +17,12 @@ using CodecZlib: GzipCompressorStream
 using Phylogeny
 
 parse_blast_io(::IO) = nothing # to please linter
-eval(BlastParse.gen_blastparse_code(
-    (:qacc, :sacc, :qcovhsp, :pident, :bitscore),
-    :parse_blast_io
-))
+eval(
+    BlastParse.gen_blastparse_code(
+        (:qacc, :sacc, :qcovhsp, :pident, :bitscore),
+        :parse_blast_io,
+    ),
+)
 
 struct Match
     clade::Clade
@@ -77,12 +79,10 @@ function is_empty(s::SampleGenoType, relevant::SegmentTuple{Bool})
     end
 end
 
-function has_nohits_segment(s::SampleGenoType)
-    any(s.v) do i
+has_nohits_segment(s::SampleGenoType) = any(s.v) do i
         d = @unwrap_or i return false
         any(isequal(nothing), values(d))
     end
-end
 
 struct SampleSeqs
     sample::Sample
@@ -150,7 +150,7 @@ function main(
     # we use the consensus, which can be either phylocons or sequences dir.
     blast_dir::AbstractString, # input: dir w. BLAST results
     minid::AbstractFloat,
-    phylocons::Bool
+    phylocons::Bool,
 )
     isdir(catgroups_dir) || mkpath(catgroups_dir)
     samples = load_samples(cons_dir, phylocons)
@@ -184,13 +184,12 @@ end
 
 function load_consensus(
     cons_dir::AbstractString, # dir of {segment}.fna
-    samples::Vector{Sample}
+    samples::Vector{Sample},
 )::Vector{SampleSeqs}
     record = FASTA.Record()
-    intermediate = Dict(
-        s => [Tuple{UInt8, Bool, LongDNASeq}[] for i in 1:N_SEGMENTS] for s in samples
-    )
-    for file in filter!(i -> !startswith(basename(i), '.'), readdir(cons_dir, join=true))
+    intermediate =
+        Dict(s => [Tuple{UInt8, Bool, LongDNASeq}[] for i in 1:N_SEGMENTS] for s in samples)
+    for file in filter!(i -> !startswith(basename(i), '.'), readdir(cons_dir; join=true))
         segment = parse(Segment, basename(first(splitext(file))))
         open(FASTA.Reader, file) do reader
             while !eof(reader)
@@ -202,13 +201,13 @@ function load_consensus(
                     if m === nothing
                         error(
                             "Header \"$h\" does not fit pattern " *
-                            "^(.*?)_(\\d+)_([PF])\$ i.e. NAME_ORDER_[PF]"
+                            "^(.*?)_(\\d+)_([PF])\$ i.e. NAME_ORDER_[PF]",
                         )
                     end
                     (
                         Sample(something(m.captures[1])),
                         parse(UInt8, something(m.captures[2])),
-                        first(something(m.captures[3])) == 'P'
+                        first(something(m.captures[3])) == 'P',
                     )
                 end
                 seq = FASTA.sequence(LongDNASeq, record)
@@ -223,7 +222,7 @@ function load_consensus(
         end
         SampleSeqs(sample, tup)
     end |> collect
-    return sort!(result, by=i -> i.sample)
+    return sort!(result; by=i -> i.sample)
 end
 
 function load_sample_genotypes(
@@ -236,23 +235,27 @@ function load_sample_genotypes(
     # not present in the BLAST does indeed have no hits
     dType = Dict{UInt8, Tuple{Bool, MatchOptions}}
 
-    intermediate::Dict{Sample, SegmentTuple{Option{dType}}} = (consensus |> imap() do sampleseq
-        tup::SegmentTuple{Option{dType}} = map(sampleseq.seqs) do maybe_segvector
-            segvector = @unwrap_or maybe_segvector return none(dType)
-            some(dType(o => (p, nothing) for (o, p, s) in segvector))
-        end
-        sampleseq.sample => tup
-    end |> Dict)
+    intermediate::Dict{Sample, SegmentTuple{Option{dType}}} = (
+        consensus |>
+        imap() do sampleseq
+            tup::SegmentTuple{Option{dType}} = map(sampleseq.seqs) do maybe_segvector
+                segvector = @unwrap_or maybe_segvector return none(dType)
+                some(dType(o => (p, nothing) for (o, p, s) in segvector))
+            end
+            sampleseq.sample => tup
+        end |>
+        Dict
+    )
 
     # Now read blast and set the matched segments to clades
-    for file in filter!(i -> !startswith(basename(i), '.'), readdir(blast_dir, join=true))
+    for file in filter!(i -> !startswith(basename(i), '.'), readdir(blast_dir; join=true))
         bname = basename(first(splitext(file)))
         startswith(bname, '.') && continue
         segment = parse(Segment, bname)
         rows = open(parse_blast_io, file)
         byquery = Dict{Tuple{Sample, UInt8}, typeof(rows)}()
         for row in rows
-            s, o, _ = rsplit(row.qacc, '_', limit=3)
+            s, o, _ = rsplit(row.qacc, '_'; limit=3)
             sample, order = (Sample(s), parse(UInt8, o))
             push!(get!(valtype(byquery), byquery, (sample, order)), row)
         end
@@ -261,13 +264,13 @@ function load_sample_genotypes(
             passed = d[order][1]
             d[order] = (passed, assign_clade(segment, rowvec, tree_groups, min_id))
         end
-    end 
+    end
 
     # Convert to output type
     result = intermediate |> imap() do (sample, st)
         SampleGenoType(sample, st)
-    end |> collect 
-    return sort!(result, by=i->i.sample)
+    end |> collect
+    return sort!(result; by=i -> i.sample)
 end
 
 # Pass in a vector that only contains one query
@@ -275,7 +278,7 @@ function assign_clade(
     segment::Segment,
     v::Vector{<:NamedTuple},
     tree_groups::Dict{Tuple{Segment, Clade}, Vector{String}},
-    min_id::AbstractFloat
+    min_id::AbstractFloat,
 )::MatchOptions
     # If the match covers less than 75% of the query, it doesn't matter
     filter!(i -> i.qcovhsp ≥ 0.75, v)
@@ -283,7 +286,7 @@ function assign_clade(
 
     # It's a match if: Hit above minimum identity
     # and second-best clade hit is 3%-points and 50% further away 
-    sort!(v, by=i -> i.bitscore, rev=true)
+    sort!(v; by=i -> i.bitscore, rev=true)
     best = first(v)
     best.pident < min_id && return nothing
 
@@ -299,7 +302,8 @@ function assign_clade(
     next_match = Match(next_clade, next_identifier, v[next_clade_pos].pident)
 
     # If the next clade is much further away, it's the top match
-    return if (next_match.identity + 0.02 < best.pident &&
+    return if (
+        next_match.identity + 0.02 < best.pident &&
         (1 - next_match.identity) > 1.5 * (1 - best.pident)
     )
         match
@@ -331,7 +335,7 @@ end
 function categorize_genotypes(
     sample_genotypes::Vector{SampleGenoType},
     known_genotypes::Vector{GenoType},
-    relevant_segments::SegmentTuple{Bool}
+    relevant_segments::SegmentTuple{Bool},
 )::AssignmentCategories
     res_empty = SampleGenoType[]
     res_precise = Tuple{SampleGenoType, GenoType}[]
@@ -375,16 +379,16 @@ function categorize_genotypes(
         # Make sure the set of genotypes is not unresolvable
         if length(matching_genotypes) > 1
             error(
-                "Sample \"$(sample_genotype.sample)\" matches multiple genotypes: " * 
-                "\"$(matching_genotypes[1].name)\", and \"$(matching_genotypes[2].name)\""
+                "Sample \"$(sample_genotype.sample)\" matches multiple genotypes: " *
+                "\"$(matching_genotypes[1].name)\", and \"$(matching_genotypes[2].name)\"",
             )
         end
 
         if !isempty(matching_genotypes) && !isempty(compatible_genotypes)
             error(
-                "Sample \"$(sample_genotype.sample)\" matches genotype " * 
+                "Sample \"$(sample_genotype.sample)\" matches genotype " *
                 "\"$(matching_genotypes[1].name)\", but is also compatible with " *
-                "\"$(compatible_genotypes[1].name)\". Make sure genotypes are disjoint."
+                "\"$(compatible_genotypes[1].name)\". Make sure genotypes are disjoint.",
             )
         end
 
@@ -410,16 +414,21 @@ function categorize_genotypes(
         # Else it's unknown
         push!(res_indeterminate, (sample_genotype, copy(compatible_genotypes)))
     end
-    return AssignmentCategories(res_empty, res_precise, res_unique, res_indeterminate, res_new)
+    return AssignmentCategories(
+        res_empty,
+        res_precise,
+        res_unique,
+        res_indeterminate,
+        res_new,
+    )
 end
 
 # Output: genotypes.txt
 function write_genotype_report(
     genotype_report_path::AbstractString,
     relevance::SegmentTuple{Bool},
-    categories::AssignmentCategories
+    categories::AssignmentCategories,
 )
-
     if !isempty(categories.res_new)
         @warn "Possible new genotype detected, see genotypes.txt report"
     end
@@ -481,11 +490,7 @@ function write_genotype_report(
     end
 end
 
-function print_match_status(
-    io::IO,
-    s::SampleGenoType,
-    relevance::SegmentTuple{Bool}
-)
+function print_match_status(io::IO, s::SampleGenoType, relevance::SegmentTuple{Bool})
     @assert length(s.v) == length(relevance) == N_SEGMENTS
     for (i, (segment_status, relevant)) in enumerate(zip(s.v, relevance))
         relevant || continue
@@ -500,7 +505,7 @@ function print_match_status(
             println(io, '\t', passed ? 'P' : 'F', ' ', match)
         else
             println(io)
-            for (order, (passed, match)) in sort!(collect(dict), by=first)
+            for (order, (passed, match)) in sort!(collect(dict); by=first)
                 println(io, "\t\t\t", order, '\t', passed ? 'P' : 'F', ' ', match)
             end
         end
@@ -511,7 +516,7 @@ function write_tree_fnas(
     catgroups_dir::AbstractString,
     tree_groups::Dict{Tuple{Segment, Clade}, Vector{String}},
     sampleseqs::Vector{SampleSeqs},
-    sample_genotypes::Vector{SampleGenoType}
+    sample_genotypes::Vector{SampleGenoType},
 )
     genotype_of_sample = Dict(g.sample => g for g in sample_genotypes)
     by_tree_group = Dict{Tuple{Segment, String}, Vector{FASTA.Record}}()
@@ -536,7 +541,10 @@ function write_tree_fnas(
                 header = string(sampleseq.sample) * '_' * string(order)
                 record = FASTA.Record(header, seq)
                 for group in groups
-                    push!(get!(valtype(by_tree_group), by_tree_group, (segment, group)), record)
+                    push!(
+                        get!(valtype(by_tree_group), by_tree_group, (segment, group)),
+                        record,
+                    )
                 end
             end
         end
@@ -549,14 +557,14 @@ function write_tree_fnas(
         end
     end
     return nothing
-end 
+end
 
 if abspath(PROGRAM_FILE) == @__FILE__
     if length(ARGS) != 10
         println(
-            "Usage: julia parse_blast.jl genotype_report_path " * 
+            "Usage: julia parse_blast.jl genotype_report_path " *
             "catgroups_dir jls_path tree_groups_path " *
-            "known_genotypes_path cat_dir cons_dir blast_dir min_id is_phylocons"
+            "known_genotypes_path cat_dir cons_dir blast_dir min_id is_phylocons",
         )
         exit(1)
     else

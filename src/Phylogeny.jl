@@ -19,11 +19,7 @@ end
 
 # Assumes format is .tsv
 function load_known_genotypes(path::AbstractString)::Vector{GenoType}
-    lines = eachline(path) |>
-        imap(strip) |>
-        ifilter(!isempty) |>
-        imap(split) |>
-        collect
+    lines = eachline(path) |> imap(strip) |> ifilter(!isempty) |> imap(split) |> collect
     segments = map(i -> parse(Segment, i), lines[1][2:end])
     result = GenoType[]
     for line in lines[2:end]
@@ -33,13 +29,13 @@ function load_known_genotypes(path::AbstractString)::Vector{GenoType}
         end
         push!(result, GenoType(first(line), SegmentTuple(v)))
     end
-    return sort!(result, by=i -> i.name)
+    return sort!(result; by=i -> i.name)
 end
 
 function load_tree_groups(
     io::IO,
-    known_genotypes::Vector{GenoType}
-# Map from (segment, clade) to list of all tree groups this clade is in
+    known_genotypes::Vector{GenoType},
+    # Map from (segment, clade) to list of all tree groups this clade is in
 )::Dict{Tuple{Segment, Clade}, Vector{String}}
     tree_group_names = Dict(s => Set{String}() for s in instances(Segment))
     result = Dict{Tuple{Segment, Clade}, Vector{String}}()
@@ -59,7 +55,9 @@ function load_tree_groups(
         isempty(line) && continue
         fields = split(line)
         if length(fields) != 3
-            error("In tree_groups.txt, expected 3 whitespace-delimited fields, got line:\n\"$line\"")
+            error(
+                "In tree_groups.txt, expected 3 whitespace-delimited fields, got line:\n\"$line\"",
+            )
         end
         segment = parse(Segment, fields[1])
         name = String(fields[2])
@@ -72,7 +70,7 @@ function load_tree_groups(
             if !in(clade, known_clades[segment])
                 error(
                     "In tree_groups.txt, in group \"$name\", segtype" *
-                    "\"$(segtype)\" is not a known segtype in genotypes.txt for segment $segment"
+                    "\"$(segtype)\" is not a known segtype in genotypes.txt for segment $segment",
                 )
             end
             push!(get!(valtype(result), result, (segment, clade)), name)
@@ -82,11 +80,6 @@ function load_tree_groups(
 end
 
 export GenoType,
-    N_SEGMENTS,
-    SegmentTuple,
-    load_known_genotypes,
-    load_tree_groups,
-    ifilter,
-    imap
+    N_SEGMENTS, SegmentTuple, load_known_genotypes, load_tree_groups, ifilter, imap
 
 end # module

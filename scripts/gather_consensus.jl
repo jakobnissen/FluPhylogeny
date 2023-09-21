@@ -27,19 +27,20 @@ function main(
     outdir::AbstractString,
     phylodir::AbstractString, # simply a dir with a list of segments
     consensusdir::AbstractString,
-    cons_is_phylo::Bool # is consensus read from "phyloseqs" dir? else from "sequences" dir.
+    cons_is_phylo::Bool, # is consensus read from "phyloseqs" dir? else from "sequences" dir.
 )
     segments = map(filter!(i -> !startswith(i, '.'), readdir(phylodir))) do entry
         parse(Segment, entry)
     end |> Set
 
     # Remove consensus of irrelevant segments
-    consensus = filter!(seq -> seq.segment in segments, 
+    consensus = filter!(
+        seq -> seq.segment in segments,
         if cons_is_phylo
             load_consensus_from_phyloseqs(consensusdir)
         else
             load_consensus_from_seqdir(consensusdir)
-        end
+        end,
     )
 
     # Split by segment and ensure uniqueness of name+order within one segment
@@ -47,7 +48,9 @@ function main(
     name_orders = Dict(s => Set{Tuple{String, UInt8}}() for s in segments)
     for seq in consensus
         if (seq.name, seq.order) ∈ name_orders[seq.segment]
-            error("Name \"$(seq.name)\", order $(seq.order) segment $(seq.segment) is not unique")
+            error(
+                "Name \"$(seq.name)\", order $(seq.order) segment $(seq.segment) is not unique",
+            )
         end
         push!(bysegment[seq.segment], seq)
         push!(name_orders[seq.segment], (seq.name, seq.order))
@@ -70,14 +73,14 @@ function load_consensus_from_phyloseqs(dir::AbstractString)::Vector{Seq}
                 if m === nothing
                     error(
                         "In file \"$path\", header \"$(fasta.header)\" does not fit pattern " *
-                        "^(.*?)_([A-Z]{2}[0-9]?)_(\\d+)_([PF])\$, i.e. NAME_SEGMENT_ORDER_PASS"
+                        "^(.*?)_([A-Z]{2}[0-9]?)_(\\d+)_([PF])\$, i.e. NAME_SEGMENT_ORDER_PASS",
                     )
                 end
                 (
                     m.captures[1]::SubString,
                     parse(Segment, m.captures[2]::SubString),
                     parse(UInt8, m.captures[3]::SubString),
-                    m.captures[4]::SubString == "P"
+                    m.captures[4]::SubString == "P",
                 )
             end
             push!(result, Seq(name, sample, segment, order, passed, fasta.seq))
@@ -121,16 +124,13 @@ end
 
 function load_secondary(path::AbstractString, sample::Sample)::Vector{Seq}
     map(load_fna(path)) do fasta
-        name, segstr, order = rsplit(fasta.header, '_', limit=3)
+        name, segstr, order = rsplit(fasta.header, '_'; limit=3)
         # We know sequences loaded from secondary.fna passed QC.
         Seq(name, sample, parse(Segment, segstr), parse(UInt8, order), true, fasta.seq)
     end
 end
 
-function dump_consensus(
-    outdir::AbstractString,
-    consensus::Dict{Segment, Vector{Seq}}
-)
+function dump_consensus(outdir::AbstractString, consensus::Dict{Segment, Vector{Seq}})
     for (segment, seqs) in consensus
         open(FASTA.Writer, joinpath(outdir, string(segment) * ".fna")) do writer
             for seq in seqs
